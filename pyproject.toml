@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mi-control"
+version = "0.1.0"
+description = "Local realtime EEG workbench for Neuracle and BrainCo"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "matplotlib>=3.8",
+  "mne>=1.6",
+  "numpy>=1.26",
+  "scipy>=1.12",
+  "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+brainco = ["bc-ecap-sdk"]
+
+[project.scripts]
+mi-control-doctor = "mi_control.diagnostics.environment:main"
+mi-control-bundle = "mi_control.io.diagnostic_bundle:main"
+
+[tool.setuptools.packages.find]
+include = ["mi_control*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

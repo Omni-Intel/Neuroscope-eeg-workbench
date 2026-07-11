@@ -1,6 +1,10 @@
 .venv/
+.venv312/
 __pycache__/
 *.pyc
+*.egg-info/
 outputs/
+diagnostics/
+.pytest_cache/
 .DS_Store
 .superpowers/

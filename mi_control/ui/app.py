@@ -1,0 +1,298 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import streamlit as st
+
+from mi_control.acquisition.replay import NPZReplaySource
+from mi_control.acquisition.legacy import build_brainco_source, build_neuracle_source
+from mi_control.acquisition.simulated import SimulatedSource
+from mi_control.analysis.quality import signal_quality
+from mi_control.analysis.spectrum import power_spectrum
+from mi_control.core.models import EEGEvent
+from mi_control.core.session import SessionController
+from mi_control.io.diagnostic_bundle import create_diagnostic_bundle
+from mi_control.paradigms.base import PARADIGMS
+
+
+SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo")
+PARADIGM_OPTIONS = tuple(PARADIGMS.keys())
+
+
+def _session_key(
+    source_label: str,
+    sfreq: float,
+    n_channels: int,
+    replay_path: str,
+    oi_mi_path: str,
+    host: str,
+    port: int,
+    brainco_addr: str,
+    brainco_port: int,
+    brainco_auto: bool,
+) -> str:
+    return "|".join(
+        str(item)
+        for item in (
+            source_label,
+            sfreq,
+            n_channels,
+            replay_path,
+            oi_mi_path,
+            host,
+            port,
+            brainco_addr,
+            brainco_port,
+            brainco_auto,
+        )
+    )
+
+
+def _build_source(
+    source_label: str,
+    sfreq: float,
+    n_channels: int,
+    replay_path: str,
+    oi_mi_path: str,
+    host: str,
+    port: int,
+    brainco_addr: str,
+    brainco_port: int,
+    brainco_auto: bool,
+):
+    if source_label == "NPZ 回放":
+        if not replay_path.strip():
+            raise ValueError("请先填写 NPZ 回放文件路径")
+        return NPZReplaySource(Path(replay_path).expanduser())
+    if source_label == "博睿康 Neuracle":
+        return build_neuracle_source(oi_mi_path, host, port, sfreq, n_channels)
+    if source_label == "强脑 BrainCo":
+        return build_brainco_source(oi_mi_path, sfreq, min(n_channels, 32), brainco_addr, brainco_port, brainco_auto)
+    channels = tuple(SimulatedSource().metadata.channel_names[:n_channels])
+    return SimulatedSource(sfreq=sfreq, channel_names=channels)
+
+
+def _stop_session() -> None:
+    controller = st.session_state.get("controller")
+    if controller is not None:
+        controller.stop()
+    st.session_state.controller = None
+    st.session_state.session_key = ""
+
+
+def _draw_timeseries(data: np.ndarray, names: tuple[str, ...], sfreq: float) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(11, 4))
+    n_show = min(12, data.shape[0])
+    shown = data[:n_show]
+    centered = shown - np.mean(shown, axis=1, keepdims=True)
+    scale = max(float(np.percentile(np.abs(centered), 95)), 1.0)
+    t = np.arange(shown.shape[1]) / sfreq - shown.shape[1] / sfreq
+    offsets = np.arange(n_show)[::-1] * 4.0
+    for idx in range(n_show):
+        ax.plot(t, centered[idx] / scale + offsets[idx], lw=0.8)
+    ax.set_yticks(offsets)
+    ax.set_yticklabels(names[:n_show], fontsize=8)
+    ax.set_xlabel("seconds from now")
+    ax.set_title("实时 EEG")
+    ax.grid(alpha=0.2)
+    return fig
+
+
+def _draw_spectrum(data: np.ndarray, sfreq: float) -> plt.Figure:
+    freqs, psd = power_spectrum(data, sfreq)
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(freqs, 10.0 * np.log10(np.mean(psd, axis=0) + 1e-12), color="#2563eb")
+    ax.set_xlabel("Hz")
+    ax.set_ylabel("mean power dB")
+    ax.set_title("频谱")
+    ax.grid(alpha=0.2)
+    return fig
+
+
+def _draw_quality_bars(rms: np.ndarray, names: tuple[str, ...]) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.bar(names[: len(rms)], rms, color="#0f766e")
+    ax.set_ylabel("RMS uV")
+    ax.set_title("通道质量")
+    ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+    ax.grid(axis="y", alpha=0.2)
+    return fig
+
+
+def _event_from_sidebar(target_present: bool, seen_reported: bool, image_category: str) -> EEGEvent:
+    return EEGEvent(
+        timestamp=time.time(),
+        name="visual_trial",
+        code=image_category,
+        payload={
+            "image_category": image_category,
+            "target_present": target_present,
+            "seen_reported": seen_reported,
+        },
+    )
+
+
+def main() -> None:
+    st.set_page_config(page_title="MI Control A 版任务工作台", layout="wide")
+    st.session_state.setdefault("controller", None)
+    st.session_state.setdefault("session_key", "")
+
+    with st.sidebar:
+        st.title("MI Control")
+        source_label = st.selectbox("数据源", SOURCE_OPTIONS, index=0)
+        paradigm_label = st.selectbox("任务范式", PARADIGM_OPTIONS, index=0)
+        default_sfreq = 1000.0 if source_label == "博睿康 Neuracle" else 250.0
+        default_channels = 64 if source_label == "博睿康 Neuracle" else 32
+        sfreq = st.number_input("采样率 Hz", min_value=1.0, max_value=5000.0, value=default_sfreq, step=50.0)
+        n_channels = st.number_input("通道数", min_value=1, max_value=64, value=default_channels, step=1)
+        replay_path = st.text_input("NPZ 回放文件", value="")
+        oi_mi_path = st.text_input("oi-mi 路径", value="/Users/mac/Documents/GitHub/oi-mi")
+        host = "127.0.0.1"
+        port = 8712
+        brainco_addr = ""
+        brainco_port = 0
+        brainco_auto = True
+        if source_label == "博睿康 Neuracle":
+            host = st.text_input("JellyFish host", value="127.0.0.1")
+            port = int(st.number_input("JellyFish port", min_value=1, max_value=65535, value=8712, step=1))
+        if source_label == "强脑 BrainCo":
+            brainco_auto = st.checkbox("自动发现 BrainCo", value=True)
+            brainco_addr = st.text_input("BrainCo IP", value="")
+            brainco_port = int(st.number_input("BrainCo port", min_value=0, max_value=65535, value=0, step=1))
+        st.divider()
+        image_category = st.text_input("图像类别", value="face")
+        target_present = st.checkbox("目标出现", value=True)
+        seen_reported = st.checkbox("受试者报告看见", value=False)
+        st.divider()
+        start = st.button("启动", type="primary", width="stretch")
+        stop = st.button("停止", width="stretch")
+        make_bundle = st.button("生成诊断包", width="stretch")
+
+    if stop:
+        _stop_session()
+        st.rerun()
+
+    if make_bundle:
+        bundle = create_diagnostic_bundle(Path("diagnostics/mi-control-diagnostic.zip"))
+        st.sidebar.success(f"已生成 {bundle}")
+
+    config_key = _session_key(
+        source_label,
+        sfreq,
+        int(n_channels),
+        replay_path,
+        oi_mi_path,
+        host,
+        port,
+        brainco_addr,
+        brainco_port,
+        brainco_auto,
+    )
+    if start:
+        _stop_session()
+        try:
+            source = _build_source(
+                source_label,
+                float(sfreq),
+                int(n_channels),
+                replay_path,
+                oi_mi_path,
+                host,
+                port,
+                brainco_addr,
+                brainco_port,
+                brainco_auto,
+            )
+            controller = SessionController(source)
+            controller.start()
+            st.session_state.controller = controller
+            st.session_state.session_key = config_key
+            st.rerun()
+        except Exception as exc:  # noqa: BLE001
+            st.sidebar.error(str(exc))
+
+    controller: SessionController | None = st.session_state.get("controller")
+    running = controller is not None
+    if running and st.session_state.session_key != config_key:
+        st.warning("左侧参数已改变。请先停止，再启动。")
+
+    top = st.container()
+    with top:
+        cols = st.columns(5)
+        cols[0].metric("状态", controller.state.value if controller else "idle")
+        cols[1].metric("数据源", controller.source.metadata.source_type if controller else source_label)
+        cols[2].metric("范式", paradigm_label)
+        cols[3].metric("采样率", f"{controller.source.metadata.sfreq:g} Hz" if controller else f"{sfreq:g} Hz")
+        cols[4].metric("运行时间", f"{controller.elapsed_sec():.1f}s" if controller else "0.0s")
+
+    if controller and controller.error:
+        st.error(controller.error)
+
+    if not controller:
+        st.info("先用模拟源确认页面正常；在采集电脑上可直接选择博睿康或强脑启动真机采集。")
+        return
+
+    snapshot = controller.buffer.latest(4.0)
+    if snapshot is None:
+        st.info("等待足够数据...")
+        time.sleep(0.5)
+        st.rerun()
+        return
+
+    data, _timestamps = snapshot
+    metadata = controller.source.metadata
+    event = _event_from_sidebar(target_present, seen_reported, image_category)
+    quality = signal_quality(data, metadata.channel_names, int(round(4.0 * metadata.sfreq)))
+    paradigm = PARADIGMS[paradigm_label]
+    result = paradigm.analyze(metadata, data, (event,))
+
+    tab_monitor, tab_quality, tab_paradigm, tab_record = st.tabs(("实时监控", "信号质量", "范式分析", "记录"))
+    with tab_monitor:
+        st.pyplot(_draw_timeseries(data, metadata.channel_names, metadata.sfreq), width="stretch")
+        st.pyplot(_draw_spectrum(data, metadata.sfreq), width="stretch")
+    with tab_quality:
+        cols = st.columns(4)
+        cols[0].metric("整体质量", quality.overall)
+        cols[1].metric("平直通道", len(quality.flat_channels))
+        cols[2].metric("噪声通道", len(quality.noisy_channels))
+        cols[3].metric("疑似削顶", len(quality.clipped_channels))
+        st.pyplot(_draw_quality_bars(quality.rms_uv, metadata.channel_names), width="stretch")
+        if quality.flat_channels or quality.noisy_channels or quality.clipped_channels:
+            st.write(
+                {
+                    "flat": quality.flat_channels,
+                    "noisy": quality.noisy_channels,
+                    "clipped": quality.clipped_channels,
+                }
+            )
+    with tab_paradigm:
+        st.subheader(result.headline)
+        st.caption("当前没有加载验证过的模型时，界面只显示可审计特征，不输出分类结论。")
+        metrics = result.metrics
+        if metrics:
+            metric_cols = st.columns(min(4, len(metrics)))
+            for idx, (name, value) in enumerate(metrics.items()):
+                metric_cols[idx % len(metric_cols)].metric(name, f"{value:.3g}" if isinstance(value, float) else str(value))
+    with tab_record:
+        st.write(
+            {
+                "source_id": metadata.source_id,
+                "channels": metadata.channel_names,
+                "visual_event": dict(event.payload),
+                "samples_buffered": controller.buffer.sample_count(),
+            }
+        )
+
+    time.sleep(0.8)
+    st.rerun()
+
+
+if __name__ == "__main__":
+    main()
