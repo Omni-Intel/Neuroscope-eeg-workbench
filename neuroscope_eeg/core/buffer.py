@@ -5,7 +5,7 @@ from collections import deque
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class RollingBuffer:

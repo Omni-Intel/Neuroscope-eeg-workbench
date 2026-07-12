@@ -3,9 +3,9 @@ from __future__ import annotations
 import threading
 import time
 
-from mi_control.acquisition.base import EEGSource
-from mi_control.core.buffer import RollingBuffer
-from mi_control.core.models import ConnectionState, EEGChunk
+from neuroscope_eeg.acquisition.base import EEGSource
+from neuroscope_eeg.core.buffer import RollingBuffer
+from neuroscope_eeg.core.models import ConnectionState, EEGChunk
 
 
 class SessionController:

@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 DEFAULT_CHANNELS_32 = (

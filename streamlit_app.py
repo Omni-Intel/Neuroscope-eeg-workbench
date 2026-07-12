@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Backward-compatible Streamlit entrypoint for MI Control."""
+"""Backward-compatible Streamlit entrypoint for NeuroScope."""
 
-from mi_control.ui.app import main
+from neuroscope_eeg.ui.app import main
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@
 - 默认诊断包：`neuroscope-diagnostic.zip`
 - 交付压缩包：`neuroscope-eeg-workbench-<日期>.zip`
 
-代码、测试、README、页面标题、诊断文本、文档文件名和内部路径中的 `MI Control`、`mi-control`、`mi_control` 均需迁移。旧的 `streamlit_app.py` 和 `realtime_eeg_viewer.py` 继续作为兼容启动入口，但其中的产品描述改为 NeuroScope。
+代码、测试、README、页面标题、诊断文本、文档文件名和内部路径统一使用上述 NeuroScope 命名。`streamlit_app.py` 和 `realtime_eeg_viewer.py` 继续作为兼容启动入口，其中的产品描述也使用 NeuroScope。
 
 本地工作区的顶层文件夹由用户在文件系统中改名，不由 Git 跟踪。交付压缩包解压后的根目录使用 `neuroscope-eeg-workbench`。
 
@@ -168,4 +168,3 @@ Mac 端验证不能替代真实硬件验收。公司 GitHub 上传和推送仍�
 - 可直接传到 Windows 的项目压缩包；
 - 本地 Git 提交；
 - 不包含采集数据、受试者隐私数据、厂商密钥或未经许可的 SDK 文件。
-

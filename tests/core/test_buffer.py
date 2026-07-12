@@ -1,5 +1,5 @@
-from mi_control.acquisition.simulated import SimulatedSource
-from mi_control.core.buffer import RollingBuffer
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.core.buffer import RollingBuffer
 
 
 def test_rolling_buffer_keeps_recent_samples_only() -> None:

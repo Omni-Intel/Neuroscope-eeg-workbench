@@ -3,9 +3,9 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mi-control"
+name = "neuroscope-eeg-workbench"
 version = "0.1.0"
-description = "Local realtime EEG workbench for Neuracle and BrainCo"
+description = "NeuroScope multi-paradigm EEG visualization workbench for Neuracle and BrainCo"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -24,11 +24,11 @@ dev = [
 brainco = ["bc-ecap-sdk"]
 
 [project.scripts]
-mi-control-doctor = "mi_control.diagnostics.environment:main"
-mi-control-bundle = "mi_control.io.diagnostic_bundle:main"
+neuroscope-doctor = "neuroscope_eeg.diagnostics.environment:main"
+neuroscope-bundle = "neuroscope_eeg.io.diagnostic_bundle:main"
 
 [tool.setuptools.packages.find]
-include = ["mi_control*"]
+include = ["neuroscope_eeg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

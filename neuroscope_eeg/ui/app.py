@@ -11,15 +11,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 
-from mi_control.acquisition.replay import NPZReplaySource
-from mi_control.acquisition.legacy import build_brainco_source, build_neuracle_source
-from mi_control.acquisition.simulated import SimulatedSource
-from mi_control.analysis.quality import signal_quality
-from mi_control.analysis.spectrum import power_spectrum
-from mi_control.core.models import EEGEvent
-from mi_control.core.session import SessionController
-from mi_control.io.diagnostic_bundle import create_diagnostic_bundle
-from mi_control.paradigms.base import PARADIGMS
+from neuroscope_eeg.acquisition.replay import NPZReplaySource
+from neuroscope_eeg.acquisition.legacy import build_brainco_source, build_neuracle_source
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.analysis.quality import signal_quality
+from neuroscope_eeg.analysis.spectrum import power_spectrum
+from neuroscope_eeg.core.models import EEGEvent
+from neuroscope_eeg.core.session import SessionController
+from neuroscope_eeg.io.diagnostic_bundle import create_diagnostic_bundle
+from neuroscope_eeg.paradigms.base import PARADIGMS
 
 
 SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo")
@@ -126,7 +126,19 @@ def _draw_quality_bars(rms: np.ndarray, names: tuple[str, ...]) -> plt.Figure:
     return fig
 
 
-def _event_from_sidebar(target_present: bool, seen_reported: bool, image_category: str) -> EEGEvent:
+def _parse_frequencies(value: str) -> tuple[float, ...]:
+    frequencies = tuple(float(item.strip()) for item in value.split(",") if item.strip())
+    if not frequencies or any(frequency <= 0 for frequency in frequencies):
+        raise ValueError("刺激频率必须是用逗号分隔的正数")
+    return frequencies
+
+
+def _event_from_sidebar(
+    target_present: bool,
+    seen_reported: bool,
+    image_category: str,
+    ssvep_targets: tuple[float, ...],
+) -> EEGEvent:
     return EEGEvent(
         timestamp=time.time(),
         name="visual_trial",
@@ -135,17 +147,19 @@ def _event_from_sidebar(target_present: bool, seen_reported: bool, image_categor
             "image_category": image_category,
             "target_present": target_present,
             "seen_reported": seen_reported,
+            "ssvep_targets": ssvep_targets,
         },
     )
 
 
 def main() -> None:
-    st.set_page_config(page_title="MI Control A 版任务工作台", layout="wide")
+    st.set_page_config(page_title="NeuroScope｜多范式脑电可视化工作台", layout="wide")
     st.session_state.setdefault("controller", None)
     st.session_state.setdefault("session_key", "")
 
     with st.sidebar:
-        st.title("MI Control")
+        st.title("NeuroScope")
+        st.caption("多范式脑电可视化工作台")
         source_label = st.selectbox("数据源", SOURCE_OPTIONS, index=0)
         paradigm_label = st.selectbox("任务范式", PARADIGM_OPTIONS, index=0)
         default_sfreq = 1000.0 if source_label == "博睿康 Neuracle" else 250.0
@@ -153,7 +167,7 @@ def main() -> None:
         sfreq = st.number_input("采样率 Hz", min_value=1.0, max_value=5000.0, value=default_sfreq, step=50.0)
         n_channels = st.number_input("通道数", min_value=1, max_value=64, value=default_channels, step=1)
         replay_path = st.text_input("NPZ 回放文件", value="")
-        oi_mi_path = st.text_input("oi-mi 路径", value="/Users/mac/Documents/GitHub/oi-mi")
+        oi_mi_path = st.text_input("oi-mi 路径", value="", help="仅真机模式需要；填写采集电脑上的实际目录")
         host = "127.0.0.1"
         port = 8712
         brainco_addr = ""
@@ -167,9 +181,17 @@ def main() -> None:
             brainco_addr = st.text_input("BrainCo IP", value="")
             brainco_port = int(st.number_input("BrainCo port", min_value=0, max_value=65535, value=0, step=1))
         st.divider()
-        image_category = st.text_input("图像类别", value="face")
-        target_present = st.checkbox("目标出现", value=True)
-        seen_reported = st.checkbox("受试者报告看见", value=False)
+        ssvep_targets_text = "8,10,12,15"
+        if paradigm_label == "SSVEP":
+            ssvep_targets_text = st.text_input("刺激频率 Hz", value=ssvep_targets_text)
+        image_category = "未设置"
+        target_present = False
+        seen_reported = False
+        if paradigm_label == "视觉图像识别":
+            st.caption("实验记录")
+            image_category = st.text_input("受试者正在观看的图像类别", value="face")
+            target_present = st.checkbox("目标实际出现", value=True)
+            seen_reported = st.checkbox("受试者报告看见", value=False)
         st.divider()
         start = st.button("启动", type="primary", width="stretch")
         stop = st.button("停止", width="stretch")
@@ -180,7 +202,7 @@ def main() -> None:
         st.rerun()
 
     if make_bundle:
-        bundle = create_diagnostic_bundle(Path("diagnostics/mi-control-diagnostic.zip"))
+        bundle = create_diagnostic_bundle(Path("diagnostics/neuroscope-diagnostic.zip"))
         st.sidebar.success(f"已生成 {bundle}")
 
     config_key = _session_key(
@@ -248,7 +270,12 @@ def main() -> None:
 
     data, _timestamps = snapshot
     metadata = controller.source.metadata
-    event = _event_from_sidebar(target_present, seen_reported, image_category)
+    try:
+        ssvep_targets = _parse_frequencies(ssvep_targets_text)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    event = _event_from_sidebar(target_present, seen_reported, image_category, ssvep_targets)
     quality = signal_quality(data, metadata.channel_names, int(round(4.0 * metadata.sfreq)))
     paradigm = PARADIGMS[paradigm_label]
     result = paradigm.analyze(metadata, data, (event,))
@@ -273,13 +300,32 @@ def main() -> None:
                 }
             )
     with tab_paradigm:
-        st.subheader(result.headline)
-        st.caption("当前没有加载验证过的模型时，界面只显示可审计特征，不输出分类结论。")
+        st.caption(f"Decoder：{result.decoder_name}")
+        result_cols = st.columns(3)
+        if quality.overall == "good":
+            result_cols[0].metric("即时结果", result.headline)
+            result_cols[1].metric("结果来源", result.source)
+            result_cols[2].metric("基线置信度", f"{result.confidence:.0%}")
+        else:
+            result_cols[0].metric("即时结果", "信号质量不足")
+            result_cols[1].metric("结果来源", "尚未解码")
+            result_cols[2].metric("基线置信度", "0%")
+        st.caption(result.detail)
+        st.warning("未标定，仅供快速观察。正式分类需要在采集电脑上用带标签数据校准。")
+        if result.missing:
+            st.info("；".join(result.missing))
         metrics = result.metrics
         if metrics:
             metric_cols = st.columns(min(4, len(metrics)))
             for idx, (name, value) in enumerate(metrics.items()):
                 metric_cols[idx % len(metric_cols)].metric(name, f"{value:.3g}" if isinstance(value, float) else str(value))
+        if paradigm_label == "视觉图像识别":
+            st.divider()
+            st.subheader("实验记录（不是 Decoder 预测）")
+            record_cols = st.columns(3)
+            record_cols[0].metric("正在观看的图像类别", image_category)
+            record_cols[1].metric("目标实际出现", "是" if target_present else "否")
+            record_cols[2].metric("受试者报告看见", "是" if seen_reported else "否")
     with tab_record:
         st.write(
             {

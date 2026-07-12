@@ -1,8 +1,8 @@
-# MI Control Foundation and Workbench Implementation Plan
+# NeuroScope Foundation and Workbench Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build plan 1 of 6: an independently installable MI Control package with unified EEG contracts, deterministic simulation and replay, signal-quality foundations, safe session control, and the approved Streamlit task-workbench layout.
+**Goal:** Build plan 1 of 6: an independently installable NeuroScope package with unified EEG contracts, deterministic simulation and replay, signal-quality foundations, safe session control, and the approved Streamlit task-workbench layout.
 
 **Architecture:** Device-specific sources emit the same immutable metadata, EEG chunks, and events into a thread-safe session controller. Analysis and quality functions consume only those contracts, while Streamlit renders stable monitoring, quality, paradigm, and recording tabs without importing vendor SDKs.
 
@@ -27,20 +27,20 @@ Do not start a later plan by weakening the contracts in this plan. Do not add ve
 
 ```text
 pyproject.toml                         Package metadata and dependencies
-mi_control/__init__.py                Public package version
-mi_control/core/models.py             Immutable metadata, chunks, events, states
-mi_control/core/buffer.py             Thread-safe fixed-duration EEG buffer
-mi_control/core/session.py            Worker lifecycle and connection state machine
-mi_control/acquisition/base.py        Source protocol
-mi_control/acquisition/simulated.py   Deterministic simulated EEG source
-mi_control/acquisition/replay.py      NPZ replay source
-mi_control/preprocessing/basic.py     Reference, notch, and band-pass functions
-mi_control/analysis/spectrum.py       PSD and band-power calculations
-mi_control/analysis/quality.py        Per-window health metrics
-mi_control/paradigms/base.py          Plugin and model-compatibility contracts
-mi_control/io/diagnostic_bundle.py    Portable metadata and replay bundle
-mi_control/diagnostics/environment.py Standard-library environment report
-mi_control/ui/app.py                  Approved task-workbench UI
+neuroscope_eeg/__init__.py                Public package version
+neuroscope_eeg/core/models.py             Immutable metadata, chunks, events, states
+neuroscope_eeg/core/buffer.py             Thread-safe fixed-duration EEG buffer
+neuroscope_eeg/core/session.py            Worker lifecycle and connection state machine
+neuroscope_eeg/acquisition/base.py        Source protocol
+neuroscope_eeg/acquisition/simulated.py   Deterministic simulated EEG source
+neuroscope_eeg/acquisition/replay.py      NPZ replay source
+neuroscope_eeg/preprocessing/basic.py     Reference, notch, and band-pass functions
+neuroscope_eeg/analysis/spectrum.py       PSD and band-power calculations
+neuroscope_eeg/analysis/quality.py        Per-window health metrics
+neuroscope_eeg/paradigms/base.py          Plugin and model-compatibility contracts
+neuroscope_eeg/io/diagnostic_bundle.py    Portable metadata and replay bundle
+neuroscope_eeg/diagnostics/environment.py Standard-library environment report
+neuroscope_eeg/ui/app.py                  Approved task-workbench UI
 streamlit_app.py                      Backward-compatible Streamlit entrypoint
 tests/...                             Unit, replay, and UI tests
 README.md                             New package usage and current limitations
@@ -50,7 +50,7 @@ README.md                             New package usage and current limitations
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `mi_control/__init__.py`
+- Create: `neuroscope_eeg/__init__.py`
 - Create: `tests/test_package.py`
 
 - [ ] **Step 1: Write the failing import check**
@@ -58,10 +58,10 @@ README.md                             New package usage and current limitations
 Run:
 
 ```bash
-python3.12 -c "import mi_control"
+python3.12 -c "import neuroscope_eeg"
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'mi_control'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'neuroscope_eeg'`.
 
 - [ ] **Step 2: Add package metadata and development tools**
 
@@ -73,7 +73,7 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mi-control"
+name = "neuroscope-eeg-workbench"
 version = "0.1.0"
 description = "Local realtime EEG workbench for Neuracle and BrainCo"
 readme = "README.md"
@@ -94,10 +94,10 @@ dev = [
 brainco = ["bc-ecap-sdk"]
 
 [project.scripts]
-mi-control-doctor = "mi_control.diagnostics.environment:main"
+neuroscope-doctor = "neuroscope_eeg.diagnostics.environment:main"
 
 [tool.setuptools.packages.find]
-include = ["mi_control*"]
+include = ["neuroscope_eeg*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -108,10 +108,10 @@ line-length = 120
 target-version = "py312"
 ```
 
-Create `mi_control/__init__.py`:
+Create `neuroscope_eeg/__init__.py`:
 
 ```python
-"""MI Control realtime EEG workbench."""
+"""NeuroScope realtime EEG workbench."""
 
 __version__ = "0.1.0"
 ```
@@ -119,7 +119,7 @@ __version__ = "0.1.0"
 Create `tests/test_package.py`:
 
 ```python
-from mi_control import __version__
+from neuroscope_eeg import __version__
 
 
 def test_package_version() -> None:
@@ -136,7 +136,7 @@ python3.12 -m venv .venv312
 .venv312/bin/python -m pip install -e '.[dev]'
 ```
 
-Expected: installation completes and reports `Successfully installed mi-control`.
+Expected: installation completes and reports `Successfully installed neuroscope-eeg-workbench`.
 
 - [ ] **Step 4: Run the package smoke test**
 
@@ -151,15 +151,15 @@ Expected: `1 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add pyproject.toml mi_control/__init__.py tests/test_package.py
-git commit -m "build: bootstrap mi-control package"
+git add pyproject.toml neuroscope_eeg/__init__.py tests/test_package.py
+git commit -m "build: bootstrap neuroscope-eeg-workbench package"
 ```
 
 ### Task 2: Define canonical EEG data contracts
 
 **Files:**
-- Create: `mi_control/core/__init__.py`
-- Create: `mi_control/core/models.py`
+- Create: `neuroscope_eeg/core/__init__.py`
+- Create: `neuroscope_eeg/core/models.py`
 - Create: `tests/core/test_models.py`
 
 - [ ] **Step 1: Write contract tests**
@@ -170,7 +170,7 @@ Create `tests/core/test_models.py`:
 import numpy as np
 import pytest
 
-from mi_control.core.models import ConnectionState, EEGChunk, EEGEvent, SourceMetadata
+from neuroscope_eeg.core.models import ConnectionState, EEGChunk, EEGEvent, SourceMetadata
 
 
 def test_metadata_rejects_mismatched_channel_fields() -> None:
@@ -209,11 +209,11 @@ Run:
 .venv312/bin/python -m pytest tests/core/test_models.py -v
 ```
 
-Expected: FAIL because `mi_control.core.models` does not exist.
+Expected: FAIL because `neuroscope_eeg.core.models` does not exist.
 
 - [ ] **Step 3: Implement immutable contracts**
 
-Create an empty `mi_control/core/__init__.py` and create `mi_control/core/models.py`:
+Create an empty `neuroscope_eeg/core/__init__.py` and create `neuroscope_eeg/core/models.py`:
 
 ```python
 from __future__ import annotations
@@ -317,14 +317,14 @@ Expected: `4 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/core tests/core/test_models.py
+git add neuroscope_eeg/core tests/core/test_models.py
 git commit -m "feat: define canonical EEG contracts"
 ```
 
 ### Task 3: Add the thread-safe rolling buffer
 
 **Files:**
-- Create: `mi_control/core/buffer.py`
+- Create: `neuroscope_eeg/core/buffer.py`
 - Create: `tests/core/test_buffer.py`
 
 - [ ] **Step 1: Write buffer tests**
@@ -334,8 +334,8 @@ Create `tests/core/test_buffer.py`:
 ```python
 import numpy as np
 
-from mi_control.core.buffer import RollingBuffer
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.buffer import RollingBuffer
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 META = SourceMetadata.eeg("sim", "simulated", 10.0, ("C3", "C4"))
@@ -375,7 +375,7 @@ Expected: FAIL because `RollingBuffer` is missing.
 
 - [ ] **Step 3: Implement the buffer**
 
-Create `mi_control/core/buffer.py`:
+Create `neuroscope_eeg/core/buffer.py`:
 
 ```python
 from __future__ import annotations
@@ -385,7 +385,7 @@ from threading import Lock
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class RollingBuffer:
@@ -445,16 +445,16 @@ Expected: `6 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/core/buffer.py tests/core/test_buffer.py
+git add neuroscope_eeg/core/buffer.py tests/core/test_buffer.py
 git commit -m "feat: add thread-safe EEG rolling buffer"
 ```
 
 ### Task 4: Add the source protocol and deterministic simulator
 
 **Files:**
-- Create: `mi_control/acquisition/__init__.py`
-- Create: `mi_control/acquisition/base.py`
-- Create: `mi_control/acquisition/simulated.py`
+- Create: `neuroscope_eeg/acquisition/__init__.py`
+- Create: `neuroscope_eeg/acquisition/base.py`
+- Create: `neuroscope_eeg/acquisition/simulated.py`
 - Create: `tests/acquisition/test_simulated.py`
 
 - [ ] **Step 1: Write simulator tests**
@@ -464,7 +464,7 @@ Create `tests/acquisition/test_simulated.py`:
 ```python
 import numpy as np
 
-from mi_control.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
 
 
 def test_simulator_is_deterministic_and_timestamped() -> None:
@@ -495,12 +495,12 @@ Expected: FAIL because acquisition modules do not exist.
 
 - [ ] **Step 3: Define the protocol and simulator**
 
-Create an empty `mi_control/acquisition/__init__.py` and `mi_control/acquisition/base.py`:
+Create an empty `neuroscope_eeg/acquisition/__init__.py` and `neuroscope_eeg/acquisition/base.py`:
 
 ```python
 from typing import Protocol
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class EEGSource(Protocol):
@@ -511,7 +511,7 @@ class EEGSource(Protocol):
     def stop(self) -> None: ...
 ```
 
-Create `mi_control/acquisition/simulated.py`:
+Create `neuroscope_eeg/acquisition/simulated.py`:
 
 ```python
 from __future__ import annotations
@@ -520,7 +520,7 @@ import time
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class SimulatedSource:
@@ -573,14 +573,14 @@ Expected: `2 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/acquisition tests/acquisition/test_simulated.py
+git add neuroscope_eeg/acquisition tests/acquisition/test_simulated.py
 git commit -m "feat: add deterministic EEG simulator"
 ```
 
 ### Task 5: Add portable NPZ replay
 
 **Files:**
-- Create: `mi_control/acquisition/replay.py`
+- Create: `neuroscope_eeg/acquisition/replay.py`
 - Create: `tests/acquisition/test_replay.py`
 - Create: `tests/fixtures/.gitkeep`
 
@@ -593,7 +593,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mi_control.acquisition.replay import ReplaySource
+from neuroscope_eeg.acquisition.replay import ReplaySource
 
 
 def test_replay_returns_ordered_packets(tmp_path: Path) -> None:
@@ -615,14 +615,14 @@ Expected: FAIL because `ReplaySource` is missing.
 
 - [ ] **Step 3: Implement replay with explicit end-of-stream**
 
-Create `mi_control/acquisition/replay.py`:
+Create `neuroscope_eeg/acquisition/replay.py`:
 
 ```python
 from pathlib import Path
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class ReplaySource:
@@ -672,17 +672,17 @@ Expected: `3 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/acquisition/replay.py tests/acquisition/test_replay.py tests/fixtures/.gitkeep
+git add neuroscope_eeg/acquisition/replay.py tests/acquisition/test_replay.py tests/fixtures/.gitkeep
 git commit -m "feat: add portable EEG replay source"
 ```
 
 ### Task 6: Extract preprocessing and spectral analysis
 
 **Files:**
-- Create: `mi_control/preprocessing/__init__.py`
-- Create: `mi_control/preprocessing/basic.py`
-- Create: `mi_control/analysis/__init__.py`
-- Create: `mi_control/analysis/spectrum.py`
+- Create: `neuroscope_eeg/preprocessing/__init__.py`
+- Create: `neuroscope_eeg/preprocessing/basic.py`
+- Create: `neuroscope_eeg/analysis/__init__.py`
+- Create: `neuroscope_eeg/analysis/spectrum.py`
 - Create: `tests/analysis/test_spectrum.py`
 
 - [ ] **Step 1: Write numerical tests**
@@ -692,8 +692,8 @@ Create `tests/analysis/test_spectrum.py`:
 ```python
 import numpy as np
 
-from mi_control.analysis.spectrum import BAND_LIMITS, band_power_db, power_spectrum
-from mi_control.preprocessing.basic import common_average_reference
+from neuroscope_eeg.analysis.spectrum import BAND_LIMITS, band_power_db, power_spectrum
+from neuroscope_eeg.preprocessing.basic import common_average_reference
 
 
 def test_common_average_reference_has_zero_instantaneous_mean() -> None:
@@ -724,7 +724,7 @@ Expected: FAIL because preprocessing and analysis modules are missing.
 
 - [ ] **Step 3: Implement the minimal functions**
 
-Create empty package `__init__.py` files and `mi_control/preprocessing/basic.py`:
+Create empty package `__init__.py` files and `neuroscope_eeg/preprocessing/basic.py`:
 
 ```python
 import numpy as np
@@ -736,7 +736,7 @@ def common_average_reference(data: NDArray[np.floating]) -> NDArray[np.float32]:
     return np.asarray(array - array.mean(axis=0, keepdims=True), dtype=np.float32)
 ```
 
-Create `mi_control/analysis/spectrum.py`:
+Create `neuroscope_eeg/analysis/spectrum.py`:
 
 ```python
 import numpy as np
@@ -778,14 +778,14 @@ Expected: `3 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/preprocessing mi_control/analysis tests/analysis/test_spectrum.py
+git add neuroscope_eeg/preprocessing neuroscope_eeg/analysis tests/analysis/test_spectrum.py
 git commit -m "feat: add reusable EEG spectral analysis"
 ```
 
 ### Task 7: Compute auditable signal-quality metrics
 
 **Files:**
-- Create: `mi_control/analysis/quality.py`
+- Create: `neuroscope_eeg/analysis/quality.py`
 - Create: `tests/analysis/test_quality.py`
 
 - [ ] **Step 1: Write quality tests**
@@ -795,7 +795,7 @@ Create `tests/analysis/test_quality.py`:
 ```python
 import numpy as np
 
-from mi_control.analysis.quality import assess_quality
+from neuroscope_eeg.analysis.quality import assess_quality
 
 
 def test_quality_flags_flat_and_nonfinite_channels() -> None:
@@ -820,7 +820,7 @@ Expected: FAIL because quality analysis is missing.
 
 - [ ] **Step 3: Implement the quality report**
 
-Create `mi_control/analysis/quality.py`:
+Create `neuroscope_eeg/analysis/quality.py`:
 
 ```python
 from dataclasses import dataclass
@@ -862,15 +862,15 @@ Expected: `2 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/analysis/quality.py tests/analysis/test_quality.py
+git add neuroscope_eeg/analysis/quality.py tests/analysis/test_quality.py
 git commit -m "feat: report auditable EEG signal quality"
 ```
 
 ### Task 8: Define paradigm and model compatibility gates
 
 **Files:**
-- Create: `mi_control/paradigms/__init__.py`
-- Create: `mi_control/paradigms/base.py`
+- Create: `neuroscope_eeg/paradigms/__init__.py`
+- Create: `neuroscope_eeg/paradigms/base.py`
 - Create: `tests/paradigms/test_base.py`
 
 - [ ] **Step 1: Write compatibility tests**
@@ -878,8 +878,8 @@ git commit -m "feat: report auditable EEG signal quality"
 Create `tests/paradigms/test_base.py`:
 
 ```python
-from mi_control.core.models import SourceMetadata
-from mi_control.paradigms.base import ModelManifest, ParadigmRequirements, validate_requirements
+from neuroscope_eeg.core.models import SourceMetadata
+from neuroscope_eeg.paradigms.base import ModelManifest, ParadigmRequirements, validate_requirements
 
 
 def test_missing_required_channels_blocks_analysis() -> None:
@@ -901,12 +901,12 @@ Expected: FAIL because paradigm contracts are missing.
 
 - [ ] **Step 3: Implement requirement and manifest validation**
 
-Create an empty `mi_control/paradigms/__init__.py` and `mi_control/paradigms/base.py`:
+Create an empty `neuroscope_eeg/paradigms/__init__.py` and `neuroscope_eeg/paradigms/base.py`:
 
 ```python
 from dataclasses import dataclass
 
-from mi_control.core.models import SourceMetadata
+from neuroscope_eeg.core.models import SourceMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -952,14 +952,14 @@ Expected: `2 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/paradigms tests/paradigms/test_base.py
+git add neuroscope_eeg/paradigms tests/paradigms/test_base.py
 git commit -m "feat: gate paradigm and model compatibility"
 ```
 
 ### Task 9: Add safe session lifecycle management
 
 **Files:**
-- Create: `mi_control/core/session.py`
+- Create: `neuroscope_eeg/core/session.py`
 - Create: `tests/core/test_session.py`
 
 - [ ] **Step 1: Write lifecycle tests**
@@ -969,9 +969,9 @@ Create `tests/core/test_session.py`:
 ```python
 import time
 
-from mi_control.acquisition.simulated import SimulatedSource
-from mi_control.core.models import ConnectionState
-from mi_control.core.session import SessionController
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.core.models import ConnectionState
+from neuroscope_eeg.core.session import SessionController
 
 
 def test_session_starts_collects_and_stops() -> None:
@@ -995,16 +995,16 @@ Expected: FAIL because `SessionController` is missing.
 
 - [ ] **Step 3: Implement the minimal controller**
 
-Create `mi_control/core/session.py`:
+Create `neuroscope_eeg/core/session.py`:
 
 ```python
 from __future__ import annotations
 
 from threading import Event, Lock, Thread
 
-from mi_control.acquisition.base import EEGSource
-from mi_control.core.buffer import RollingBuffer
-from mi_control.core.models import ConnectionState
+from neuroscope_eeg.acquisition.base import EEGSource
+from neuroscope_eeg.core.buffer import RollingBuffer
+from neuroscope_eeg.core.models import ConnectionState
 
 
 class SessionController:
@@ -1063,15 +1063,15 @@ Expected: `1 passed`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/core/session.py tests/core/test_session.py
+git add neuroscope_eeg/core/session.py tests/core/test_session.py
 git commit -m "feat: add safe EEG session lifecycle"
 ```
 
 ### Task 10: Build the approved Streamlit task workbench
 
 **Files:**
-- Create: `mi_control/ui/__init__.py`
-- Create: `mi_control/ui/app.py`
+- Create: `neuroscope_eeg/ui/__init__.py`
+- Create: `neuroscope_eeg/ui/app.py`
 - Modify: `streamlit_app.py`
 - Create: `tests/ui/test_app.py`
 
@@ -1086,7 +1086,7 @@ from streamlit.testing.v1 import AppTest
 def test_workbench_has_approved_navigation() -> None:
     app = AppTest.from_file("streamlit_app.py").run(timeout=10)
     assert not app.exception
-    assert app.title[0].value == "MI Control"
+    assert app.title[0].value == "NeuroScope"
     assert app.selectbox(key="source_type").value == "模拟"
     assert app.selectbox(key="paradigm").value == "SSVEP"
     assert [tab.label for tab in app.tabs] == ["实时监控", "信号质量", "范式分析", "记录"]
@@ -1099,13 +1099,13 @@ Expected: FAIL because the current app does not expose the approved structure.
 
 - [ ] **Step 3: Create the workbench shell**
 
-Create an empty `mi_control/ui/__init__.py` and `mi_control/ui/app.py`:
+Create an empty `neuroscope_eeg/ui/__init__.py` and `neuroscope_eeg/ui/app.py`:
 
 ```python
 import streamlit as st
 
-from mi_control.acquisition.simulated import SimulatedSource
-from mi_control.core.session import SessionController
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.core.session import SessionController
 
 SOURCE_LABELS = ("模拟", "博睿康 Neuracle", "强脑 BrainCo", "诊断包回放")
 PARADIGMS = ("SSVEP", "运动想象", "视觉图像与目标觉察", "注意力", "情绪分类")
@@ -1135,8 +1135,8 @@ def render_sidebar() -> tuple[str, str]:
 
 
 def render_app() -> None:
-    st.set_page_config(page_title="MI Control", layout="wide")
-    st.title("MI Control")
+    st.set_page_config(page_title="NeuroScope", layout="wide")
+    st.title("NeuroScope")
     source_type, paradigm = render_sidebar()
     controller = st.session_state.get("controller")
     if controller is None:
@@ -1162,7 +1162,7 @@ Replace `streamlit_app.py` with:
 
 ```python
 #!/usr/bin/env python3
-from mi_control.ui.app import render_app
+from neuroscope_eeg.ui.app import render_app
 
 
 if __name__ == "__main__":
@@ -1183,17 +1183,17 @@ Expected: test passes; Streamlit prints a local URL and the page renders four ta
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/ui streamlit_app.py tests/ui/test_app.py
-git commit -m "feat: add MI Control task workbench"
+git add neuroscope_eeg/ui streamlit_app.py tests/ui/test_app.py
+git commit -m "feat: add NeuroScope task workbench"
 ```
 
 ### Task 11: Add environment reporting and diagnostic bundles
 
 **Files:**
-- Create: `mi_control/diagnostics/__init__.py`
-- Create: `mi_control/diagnostics/environment.py`
-- Create: `mi_control/io/__init__.py`
-- Create: `mi_control/io/diagnostic_bundle.py`
+- Create: `neuroscope_eeg/diagnostics/__init__.py`
+- Create: `neuroscope_eeg/diagnostics/environment.py`
+- Create: `neuroscope_eeg/io/__init__.py`
+- Create: `neuroscope_eeg/io/diagnostic_bundle.py`
 - Create: `tests/diagnostics/test_environment.py`
 - Create: `tests/io/test_diagnostic_bundle.py`
 
@@ -1202,7 +1202,7 @@ git commit -m "feat: add MI Control task workbench"
 Create `tests/diagnostics/test_environment.py`:
 
 ```python
-from mi_control.diagnostics.environment import environment_report
+from neuroscope_eeg.diagnostics.environment import environment_report
 
 
 def test_environment_report_is_serializable() -> None:
@@ -1219,8 +1219,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
-from mi_control.io.diagnostic_bundle import read_bundle, write_bundle
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.io.diagnostic_bundle import read_bundle, write_bundle
 
 
 def test_bundle_round_trips_without_direct_identity(tmp_path: Path) -> None:
@@ -1244,7 +1244,7 @@ Expected: FAIL because diagnostics and bundle modules are missing.
 
 - [ ] **Step 3: Implement environment and bundle helpers**
 
-Create empty package `__init__.py` files and `mi_control/diagnostics/environment.py`:
+Create empty package `__init__.py` files and `neuroscope_eeg/diagnostics/environment.py`:
 
 ```python
 import importlib.util
@@ -1273,7 +1273,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Create `mi_control/io/diagnostic_bundle.py`:
+Create `neuroscope_eeg/io/diagnostic_bundle.py`:
 
 ```python
 import json
@@ -1281,7 +1281,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 ALLOWED_SUMMARY_FIELDS = {"sample_rate_error", "dropped_samples", "timestamp_reversals", "duration_sec"}
 
@@ -1315,7 +1315,7 @@ Run:
 
 ```bash
 .venv312/bin/python -m pytest tests/diagnostics/test_environment.py tests/io/test_diagnostic_bundle.py -v
-.venv312/bin/mi-control-doctor
+.venv312/bin/neuroscope-doctor
 ```
 
 Expected: `2 passed`; doctor prints JSON with Python, platform, executable, and dependency booleans.
@@ -1323,7 +1323,7 @@ Expected: `2 passed`; doctor prints JSON with Python, platform, executable, and 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mi_control/diagnostics mi_control/io tests/diagnostics tests/io
+git add neuroscope_eeg/diagnostics neuroscope_eeg/io tests/diagnostics tests/io
 git commit -m "feat: add environment and diagnostic bundle tools"
 ```
 
@@ -1342,7 +1342,7 @@ git commit -m "feat: add environment and diagnostic bundle tools"
 Document exactly these commands and boundaries:
 
 ````markdown
-# MI Control
+# NeuroScope
 
 Local EEG workbench for simulated data, diagnostic replay, Neuracle, and BrainCo.
 
@@ -1389,10 +1389,10 @@ Keep `realtime_eeg_viewer.py` in this phase as an explicitly documented legacy r
 Run:
 
 ```bash
-.venv312/bin/python -m ruff check mi_control tests streamlit_app.py
+.venv312/bin/python -m ruff check neuroscope_eeg tests streamlit_app.py
 .venv312/bin/python -m pytest -v
 .venv312/bin/python -m pip check
-.venv312/bin/mi-control-doctor
+.venv312/bin/neuroscope-doctor
 git diff --check
 ```
 
@@ -1414,7 +1414,7 @@ Run:
 
 Verify in a browser:
 
-- page title is `MI Control`;
+- page title is `NeuroScope`;
 - A-layout sidebar contains source, paradigm, subject, session, start, and stop;
 - the four approved tabs are visible without horizontal clipping at 1280x720;
 - simulated start changes the top status to `streaming`;
@@ -1426,8 +1426,8 @@ Stop the server with `Ctrl-C`.
 - [ ] **Step 5: Commit the completed foundation**
 
 ```bash
-git add README.md .gitignore pyproject.toml mi_control tests streamlit_app.py realtime_eeg_viewer.py
-git commit -m "feat: establish MI Control foundation"
+git add README.md .gitignore pyproject.toml neuroscope_eeg tests streamlit_app.py realtime_eeg_viewer.py
+git commit -m "feat: establish NeuroScope foundation"
 ```
 
 After this commit, inspect `git status --short`. Expected: no untracked product files and no modified files. Do not add a remote or push.

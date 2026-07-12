@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from mi_control.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
 
 class EEGSource(Protocol):

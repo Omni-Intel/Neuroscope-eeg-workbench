@@ -6,14 +6,14 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from mi_control.acquisition.simulated import SimulatedSource
-from mi_control.diagnostics.environment import environment_report
-from mi_control.acquisition.replay import save_replay_npz
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.diagnostics.environment import environment_report
+from neuroscope_eeg.acquisition.replay import save_replay_npz
 
 
 def create_diagnostic_bundle(output: Path, duration_sec: float = 8.0) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    workdir = output.parent / f"mi-control-diagnostic-{stamp}"
+    workdir = output.parent / f"neuroscope-diagnostic-{stamp}"
     workdir.mkdir(parents=True, exist_ok=True)
     source = SimulatedSource(paced=False)
     source.start()
@@ -31,7 +31,7 @@ def create_diagnostic_bundle(output: Path, duration_sec: float = 8.0) -> Path:
     save_replay_npz(replay_path, source.metadata, data, timestamps)
     (workdir / "environment.json").write_text(json.dumps(environment_report(), ensure_ascii=False, indent=2), encoding="utf-8")
     (workdir / "README.txt").write_text(
-        "MI Control diagnostic bundle. Send the zip back with environment.json and simulated-replay.npz intact.\n",
+        "NeuroScope diagnostic bundle. Send the zip back with environment.json and simulated-replay.npz intact.\n",
         encoding="utf-8",
     )
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ def create_diagnostic_bundle(output: Path, duration_sec: float = 8.0) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=Path("mi-control-diagnostic.zip"))
+    parser.add_argument("--output", type=Path, default=Path("neuroscope-diagnostic.zip"))
     parser.add_argument("--duration-sec", type=float, default=8.0)
     args = parser.parse_args(argv)
     print(create_diagnostic_bundle(args.output, args.duration_sec))

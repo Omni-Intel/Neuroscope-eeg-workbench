@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from mi_control.core.models import ConnectionState, EEGChunk, EEGEvent, SourceMetadata
+from neuroscope_eeg.core.models import ConnectionState, EEGChunk, EEGEvent, SourceMetadata
 
 
 def test_metadata_rejects_mismatched_channel_fields() -> None:

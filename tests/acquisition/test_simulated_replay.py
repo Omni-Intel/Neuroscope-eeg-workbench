@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mi_control.acquisition.replay import NPZReplaySource, save_replay_npz
-from mi_control.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.acquisition.replay import NPZReplaySource, save_replay_npz
+from neuroscope_eeg.acquisition.simulated import SimulatedSource
 
 
 def test_simulated_source_and_npz_replay_roundtrip(tmp_path: Path) -> None:

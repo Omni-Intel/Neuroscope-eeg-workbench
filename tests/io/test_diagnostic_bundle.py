@@ -1,7 +1,7 @@
 from pathlib import Path
 from zipfile import ZipFile
 
-from mi_control.io.diagnostic_bundle import create_diagnostic_bundle
+from neuroscope_eeg.io.diagnostic_bundle import create_diagnostic_bundle
 
 
 def test_create_diagnostic_bundle(tmp_path: Path) -> None:

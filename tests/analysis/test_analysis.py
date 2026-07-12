@@ -1,7 +1,7 @@
 import numpy as np
 
-from mi_control.analysis.quality import signal_quality
-from mi_control.analysis.spectrum import power_spectrum, ssvep_snr
+from neuroscope_eeg.analysis.quality import signal_quality
+from neuroscope_eeg.analysis.spectrum import power_spectrum, ssvep_snr
 
 
 def test_ssvep_snr_finds_synthetic_target() -> None:
