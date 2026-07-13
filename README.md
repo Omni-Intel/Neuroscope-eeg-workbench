@@ -2,7 +2,7 @@
 
 **多范式脑电可视化工作台**，用于博睿康 Neuracle、强脑 BrainCo、模拟 EEG 和 NPZ 回放。
 
-NeuroScope 提供实时波形、频谱、信号质量、实验记录和五类开箱即用的即时基线 decoder。它适合在采集现场快速看趋势；未经个人标定的结果不是科研结论或医疗诊断。
+NeuroScope 提供高刷新率桌面控制台、实时波形、频谱、信号质量、实验记录和五类开箱即用的即时基线 decoder。它适合在采集现场快速看趋势；未经个人标定的结果不是科研结论或医疗诊断。
 
 ## 已支持功能
 
@@ -14,22 +14,23 @@ NeuroScope 提供实时波形、频谱、信号质量、实验记录和五类开
 - 情绪：额叶 alpha 不对称和唤醒趋势
 - 结果来源标识、基线置信度、缺失通道提示和信号质量保护
 - BrainCo 官方 32 通道映射、干电极去漂移显示和数据新鲜度监控
+- PySide6 + pyqtgraph 桌面控制台，默认 30 FPS，可选 20/60 FPS，并显示实际刷新率
 - Windows 环境诊断包
 
 视觉任务中的 `image_category`、`target_present` 和 `seen_reported` 是实验记录，不是 decoder 预测。没有带标签的个人训练数据时，NeuroScope 不会声称从 EEG 解出了任意图像类别。
 
-## 本地运行
+## 本地运行（推荐桌面控制台）
 
 需要 Python 3.12：
 
 ```bash
 python3.12 -m venv .venv312
 .venv312/bin/python -m pip install -U pip setuptools wheel
-.venv312/bin/python -m pip install '.[dev]'
-.venv312/bin/streamlit run streamlit_app.py
+.venv312/bin/python -m pip install '.[desktop,dev]'
+.venv312/bin/python -m neuroscope_eeg.desktop.app
 ```
 
-启动后先选择“模拟”，确认五个范式的页面和即时结果正常。
+启动后先选择“模拟”，确认波形持续移动、实际刷新率接近目标值，并检查五个范式的即时结果。桌面控制台默认 30 FPS；采集电脑性能足够时可选择 60 FPS。
 
 ## Windows 采集电脑
 
@@ -38,9 +39,11 @@ python3.12 -m venv .venv312
 ```cmd
 py -3.12 -m venv .venv312
 .venv312\Scripts\python.exe -m pip install -U pip setuptools wheel
-.venv312\Scripts\python.exe -m pip install .
-.venv312\Scripts\streamlit.exe run streamlit_app.py
+.venv312\Scripts\python.exe -m pip install -r requirements-desktop.txt
+.venv312\Scripts\python.exe -m neuroscope_eeg.desktop.app
 ```
+
+安装完成后也可以直接双击 `start-neuroscope-desktop.bat`（或中文同名入口）。启动脚本会优先使用项目的 `.venv312`，其次尝试采集电脑上的 `omni` 环境。
 
 测试强脑设备时再安装厂商 SDK 依赖：
 
@@ -50,7 +53,15 @@ py -3.12 -m venv .venv312
 
 博睿康需要先打开 JellyFish 实时转发，默认地址为 `127.0.0.1:8712`。强脑模式需要填写采集电脑上的 `oi-mi` 路径，并确保 SDK 可以发现或连接设备。
 
-BrainCo 实时页会显示累计样本、数据块数量和最近数据时间。波形经过 1–45 Hz 显示滤波并逐通道独立缩放；该处理只作用于 BrainCo，Neuracle 仍使用原有通道和显示链路。
+BrainCo 实时页会显示累计样本、缓冲样本和最近数据时间。波形经过 1–45 Hz 显示滤波并逐通道独立缩放；官方 32 通道顺序和该处理只作用于 BrainCo，Neuracle 仍使用原有通道和显示链路。
+
+## Streamlit 备用入口
+
+桌面控制台是实时查看的推荐入口。需要浏览器访问时仍可启动兼容版：
+
+```cmd
+.venv312\Scripts\streamlit.exe run streamlit_app.py
+```
 
 ## 环境诊断
 
@@ -80,12 +91,17 @@ BrainCo 实时页会显示累计样本、数据块数量和最近数据时间。
 ```text
 neuroscope_eeg/       NeuroScope 主程序、采集适配、decoder 和界面
 tests/                 自动化测试
-streamlit_app.py       推荐启动入口
+neuroscope_eeg/desktop 高刷新率桌面控制台
+streamlit_app.py       浏览器备用入口
 realtime_eeg_viewer.py 备用真机 CLI
 pyproject.toml         安装与依赖配置
 requirements-brainco.txt
+requirements-desktop.txt
+start-neuroscope-desktop.bat
+启动-NeuroScope桌面控制台.bat
 docs/superpowers/specs/2026-07-11-neuroscope-design.md
 docs/superpowers/specs/2026-07-12-neuroscope-rename-and-baseline-decoders-design.md
+docs/superpowers/specs/2026-07-13-desktop-realtime-console-design.md
 ```
 
 不要提交 `.venv312`、采集数据、受试者隐私数据、厂商密钥、未经许可的 SDK 或本地诊断输出。

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuroscope-eeg-workbench"
-version = "0.1.1"
+version = "0.2.0"
 description = "NeuroScope multi-paradigm EEG visualization workbench for Neuracle and BrainCo"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -22,10 +22,15 @@ dev = [
   "ruff>=0.6",
 ]
 brainco = ["bc-ecap-sdk>=0.5,<0.6"]
+desktop = [
+  "PySide6-Essentials>=6.7,<6.11",
+  "pyqtgraph>=0.13.7,<0.15",
+]
 
 [project.scripts]
 neuroscope-doctor = "neuroscope_eeg.diagnostics.environment:main"
 neuroscope-bundle = "neuroscope_eeg.io.diagnostic_bundle:main"
+neuroscope-desktop = "neuroscope_eeg.desktop.app:main"
 
 [tool.setuptools.packages.find]
 include = ["neuroscope_eeg*"]

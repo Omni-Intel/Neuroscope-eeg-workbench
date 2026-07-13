@@ -41,9 +41,28 @@ class RollingBuffer:
         with self._lock:
             if self._n_samples < n_samples:
                 return None
-            data = np.concatenate([item[0] for item in self._chunks], axis=1)
-            timestamps = np.concatenate([item[1] for item in self._chunks])
-        return data[:, -n_samples:], timestamps[-n_samples:]
+            return self._tail_locked(n_samples)
+
+    def latest_available(self, duration_sec: float) -> tuple[np.ndarray, np.ndarray] | None:
+        n_samples = max(1, int(round(duration_sec * self.metadata.sfreq)))
+        with self._lock:
+            if self._n_samples == 0:
+                return None
+            return self._tail_locked(min(n_samples, self._n_samples))
+
+    def _tail_locked(self, n_samples: int) -> tuple[np.ndarray, np.ndarray]:
+        remaining = n_samples
+        selected: list[tuple[np.ndarray, np.ndarray]] = []
+        for data, timestamps in reversed(self._chunks):
+            take = min(remaining, data.shape[1])
+            selected.append((data[:, -take:], timestamps[-take:]))
+            remaining -= take
+            if remaining == 0:
+                break
+        selected.reverse()
+        data = np.concatenate([item[0] for item in selected], axis=1)
+        timestamps = np.concatenate([item[1] for item in selected])
+        return data, timestamps
 
     def snapshot(self) -> tuple[np.ndarray, np.ndarray]:
         with self._lock:
