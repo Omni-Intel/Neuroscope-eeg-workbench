@@ -20,10 +20,14 @@ from neuroscope_eeg.core.models import EEGEvent
 from neuroscope_eeg.core.session import SessionController
 from neuroscope_eeg.io.diagnostic_bundle import create_diagnostic_bundle
 from neuroscope_eeg.paradigms.base import PARADIGMS
+from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
 
 
 SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo")
 PARADIGM_OPTIONS = tuple(PARADIGMS.keys())
+
+plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "PingFang SC", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
 
 
 def _session_key(
@@ -87,20 +91,28 @@ def _stop_session() -> None:
     st.session_state.session_key = ""
 
 
-def _draw_timeseries(data: np.ndarray, names: tuple[str, ...], sfreq: float) -> plt.Figure:
+def _draw_timeseries(
+    data: np.ndarray,
+    names: tuple[str, ...],
+    sfreq: float,
+    *,
+    independent_scale: bool = False,
+) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(11, 4))
     n_show = min(12, data.shape[0])
     shown = data[:n_show]
     centered = shown - np.mean(shown, axis=1, keepdims=True)
-    scale = max(float(np.percentile(np.abs(centered), 95)), 1.0)
+    plotted = robust_channel_scale(centered) if independent_scale else centered
+    scale = 1.0 if independent_scale else max(float(np.percentile(np.abs(centered), 95)), 1.0)
     t = np.arange(shown.shape[1]) / sfreq - shown.shape[1] / sfreq
     offsets = np.arange(n_show)[::-1] * 4.0
     for idx in range(n_show):
-        ax.plot(t, centered[idx] / scale + offsets[idx], lw=0.8)
+        ax.plot(t, plotted[idx] / scale + offsets[idx], lw=0.8)
     ax.set_yticks(offsets)
     ax.set_yticklabels(names[:n_show], fontsize=8)
     ax.set_xlabel("seconds from now")
-    ax.set_title("实时 EEG")
+    title = "实时 EEG（逐通道独立缩放）" if independent_scale else "实时 EEG"
+    ax.set_title(title)
     ax.grid(alpha=0.2)
     return fig
 
@@ -116,11 +128,12 @@ def _draw_spectrum(data: np.ndarray, sfreq: float) -> plt.Figure:
     return fig
 
 
-def _draw_quality_bars(rms: np.ndarray, names: tuple[str, ...]) -> plt.Figure:
+def _draw_quality_bars(rms: np.ndarray, names: tuple[str, ...], *, brainco_filtered: bool = False) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(11, 4))
     ax.bar(names[: len(rms)], rms, color="#0f766e")
     ax.set_ylabel("RMS uV")
-    ax.set_title("通道质量")
+    title = "通道质量（BrainCo 去漂移及带通后）" if brainco_filtered else "通道质量"
+    ax.set_title(title)
     ax.tick_params(axis="x", labelrotation=90, labelsize=7)
     ax.grid(axis="y", alpha=0.2)
     return fig
@@ -256,6 +269,8 @@ def main() -> None:
 
     if controller and controller.error:
         st.error(controller.error)
+        if controller.source.metadata.source_type == "brainco":
+            return
 
     if not controller:
         st.info("先用模拟源确认页面正常；在采集电脑上可直接选择博睿康或强脑启动真机采集。")
@@ -263,34 +278,63 @@ def main() -> None:
 
     snapshot = controller.buffer.latest(4.0)
     if snapshot is None:
-        st.info("等待足够数据...")
-        time.sleep(0.5)
+        if controller.source.metadata.source_type == "brainco":
+            expected_samples = int(round(4.0 * controller.source.metadata.sfreq))
+            buffered_samples = controller.buffer.sample_count()
+            st.info(f"正在接收 BrainCo 数据：已缓冲 {buffered_samples} / {expected_samples} 个样本")
+            age = controller.last_data_age_sec()
+            if age is None:
+                st.caption("尚未收到第一个非空数据块。")
+            else:
+                st.caption(f"最近数据：{age:.1f} 秒前；累计接收：{controller.samples_received} 个样本")
+        else:
+            st.info("等待足够数据...")
+        time.sleep(0.4 if controller.source.metadata.source_type == "brainco" else 0.5)
         st.rerun()
         return
 
     data, _timestamps = snapshot
     metadata = controller.source.metadata
+    is_brainco = metadata.source_type == "brainco"
+    analysis_data = brainco_display_preprocess(data, metadata.sfreq) if is_brainco else data
     try:
         ssvep_targets = _parse_frequencies(ssvep_targets_text)
     except ValueError as exc:
         st.error(str(exc))
         return
     event = _event_from_sidebar(target_present, seen_reported, image_category, ssvep_targets)
-    quality = signal_quality(data, metadata.channel_names, int(round(4.0 * metadata.sfreq)))
+    quality = signal_quality(analysis_data, metadata.channel_names, int(round(4.0 * metadata.sfreq)))
     paradigm = PARADIGMS[paradigm_label]
-    result = paradigm.analyze(metadata, data, (event,))
+    result = paradigm.analyze(metadata, analysis_data, (event,))
 
     tab_monitor, tab_quality, tab_paradigm, tab_record = st.tabs(("实时监控", "信号质量", "范式分析", "记录"))
     with tab_monitor:
-        st.pyplot(_draw_timeseries(data, metadata.channel_names, metadata.sfreq), width="stretch")
-        st.pyplot(_draw_spectrum(data, metadata.sfreq), width="stretch")
+        if is_brainco:
+            live_cols = st.columns(3)
+            live_cols[0].metric("累计样本", controller.samples_received)
+            live_cols[1].metric("数据块", controller.chunks_received)
+            age = controller.last_data_age_sec()
+            live_cols[2].metric("最近数据", "尚未收到" if age is None else f"{age:.1f} 秒前")
+            if age is not None and age > 2.0:
+                st.warning("BrainCo 已超过 2 秒没有新数据，当前图形可能已经停止更新。")
+            st.caption("BrainCo 显示已去漂移并限制在 1–45 Hz；每个通道独立缩放，幅度大小请以信号质量页为准。")
+        st.pyplot(
+            _draw_timeseries(analysis_data, metadata.channel_names, metadata.sfreq, independent_scale=is_brainco),
+            width="stretch",
+        )
+        st.pyplot(_draw_spectrum(analysis_data, metadata.sfreq), width="stretch")
     with tab_quality:
         cols = st.columns(4)
         cols[0].metric("整体质量", quality.overall)
         cols[1].metric("平直通道", len(quality.flat_channels))
         cols[2].metric("噪声通道", len(quality.noisy_channels))
         cols[3].metric("疑似削顶", len(quality.clipped_channels))
-        st.pyplot(_draw_quality_bars(quality.rms_uv, metadata.channel_names), width="stretch")
+        if is_brainco:
+            st.caption("BrainCo 质量指标基于去漂移和 1–45 Hz 带通后的信号。")
+        st.pyplot(
+            _draw_quality_bars(quality.rms_uv, metadata.channel_names, brainco_filtered=is_brainco),
+            width="stretch",
+        )
         if quality.flat_channels or quality.noisy_channels or quality.clipped_channels:
             st.write(
                 {
@@ -333,10 +377,13 @@ def main() -> None:
                 "channels": metadata.channel_names,
                 "visual_event": dict(event.payload),
                 "samples_buffered": controller.buffer.sample_count(),
+                "samples_received": controller.samples_received,
+                "chunks_received": controller.chunks_received,
+                "last_data_age_sec": controller.last_data_age_sec(),
             }
         )
 
-    time.sleep(0.8)
+    time.sleep(0.4 if is_brainco else 0.8)
     st.rerun()
 
 

@@ -15,6 +15,9 @@ class SessionController:
         self.state = ConnectionState.IDLE
         self.error: str | None = None
         self.started_at: float | None = None
+        self.chunks_received = 0
+        self.samples_received = 0
+        self.last_data_at: float | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -35,6 +38,10 @@ class SessionController:
             while not self._stop.is_set():
                 chunk: EEGChunk = self.source.read_chunk()
                 self.buffer.append(chunk)
+                if chunk.n_samples > 0:
+                    self.chunks_received += 1
+                    self.samples_received += chunk.n_samples
+                    self.last_data_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001
             self.error = str(exc)
             self.state = ConnectionState.ERROR
@@ -55,3 +62,6 @@ class SessionController:
 
     def elapsed_sec(self) -> float:
         return 0.0 if self.started_at is None else time.monotonic() - self.started_at
+
+    def last_data_age_sec(self) -> float | None:
+        return None if self.last_data_at is None else max(0.0, time.monotonic() - self.last_data_at)

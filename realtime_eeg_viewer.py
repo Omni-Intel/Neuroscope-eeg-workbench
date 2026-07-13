@@ -88,6 +88,43 @@ DEFAULT_64_CH_NAMES = [
     "PO10",
 ]
 
+# BrainCo EEG Cap SDK 0.5 official 32-channel order. Keep this separate from
+# DEFAULT_64_CH_NAMES: Neuracle continues to use its existing 64-channel map.
+BRAINCO_CHANNEL_NAMES_32 = (
+    "FP1",
+    "FP2",
+    "F3",
+    "F4",
+    "F7",
+    "F8",
+    "Fz",
+    "C3",
+    "C4",
+    "Cz",
+    "P3",
+    "P4",
+    "P7",
+    "P8",
+    "Pz",
+    "O1",
+    "O2",
+    "T7",
+    "T8",
+    "FC1",
+    "FC2",
+    "FC5",
+    "FC6",
+    "CP1",
+    "CP2",
+    "CP5",
+    "CP6",
+    "FT9",
+    "FT10",
+    "TP9",
+    "TP10",
+    "IO",
+)
+
 BANDS = [
     ("delta", 1.0, 4.0),
     ("theta", 4.0, 8.0),
@@ -309,7 +346,7 @@ class BrainCoSource:
         self.metadata = SourceMetadata(
             name="brainco",
             sfreq=sfreq,
-            channel_names=DEFAULT_64_CH_NAMES[: self.n_channels],
+            channel_names=list(BRAINCO_CHANNEL_NAMES_32[: self.n_channels]),
         )
 
     def start(self) -> None:

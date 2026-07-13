@@ -13,6 +13,7 @@ NeuroScope 提供实时波形、频谱、信号质量、实验记录和五类开
 - 注意力：theta/alpha/beta 会话内趋势分数
 - 情绪：额叶 alpha 不对称和唤醒趋势
 - 结果来源标识、基线置信度、缺失通道提示和信号质量保护
+- BrainCo 官方 32 通道映射、干电极去漂移显示和数据新鲜度监控
 - Windows 环境诊断包
 
 视觉任务中的 `image_category`、`target_present` 和 `seen_reported` 是实验记录，不是 decoder 预测。没有带标签的个人训练数据时，NeuroScope 不会声称从 EEG 解出了任意图像类别。
@@ -48,6 +49,8 @@ py -3.12 -m venv .venv312
 ```
 
 博睿康需要先打开 JellyFish 实时转发，默认地址为 `127.0.0.1:8712`。强脑模式需要填写采集电脑上的 `oi-mi` 路径，并确保 SDK 可以发现或连接设备。
+
+BrainCo 实时页会显示累计样本、数据块数量和最近数据时间。波形经过 1–45 Hz 显示滤波并逐通道独立缩放；该处理只作用于 BrainCo，Neuracle 仍使用原有通道和显示链路。
 
 ## 环境诊断
 
