@@ -93,7 +93,7 @@ class SSVEPBaselineDecoder:
         return DecoderResult(
             value=f"{best_frequency:g} Hz",
             confidence=float(confidence),
-            detail="无需训练；候选频率越完整，结果越可靠。",
+            detail="候选分离度来自第一、第二 CCA 得分差，不是准确率；正式评估需使用带目标标签的试次。",
             metrics=metrics,
             missing=missing,
         )
@@ -178,7 +178,7 @@ class AttentionBaselineDecoder:
         return DecoderResult(
             value=f"{score:.0f} / 100",
             confidence=0.45,
-            detail="未做个人基线时只适合观察同一会话内的变化。",
+            detail="由 beta/(theta+alpha) 映射得到的会话内趋势分，不是注意力准确率。",
             metrics={"注意力趋势分": score, "beta/(theta+alpha)": activation},
         )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import sys
 import time
 from pathlib import Path
@@ -38,6 +40,8 @@ from neuroscope_eeg.analysis.spectrum import power_spectrum
 from neuroscope_eeg.core.models import ConnectionState, EEGEvent
 from neuroscope_eeg.core.session import SessionController
 from neuroscope_eeg.desktop.performance import FpsTracker, fps_level, timer_interval_ms
+from neuroscope_eeg.desktop.protocols import StimulusEvent, frame_locked_frequencies
+from neuroscope_eeg.desktop.stimulus import StimulusWindow
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
 from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
 
@@ -46,13 +50,6 @@ MAX_VISIBLE_CHANNELS = 32
 WAVE_WINDOW_SEC = 4.0
 SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo")
 PLOT_COLORS = ("#38bdf8", "#f59e0b", "#34d399", "#fb7185", "#a78bfa", "#22d3ee")
-
-
-def _parse_frequencies(value: str) -> tuple[float, ...]:
-    frequencies = tuple(float(item.strip()) for item in value.split(",") if item.strip())
-    if not frequencies or any(item <= 0 for item in frequencies):
-        raise ValueError("刺激频率必须是用逗号分隔的正数")
-    return frequencies
 
 
 class NeuroScopeWindow(QMainWindow):
@@ -64,6 +61,13 @@ class NeuroScopeWindow(QMainWindow):
         self._analysis_data: np.ndarray | None = None
         self._fps = FpsTracker()
         self._run_started_at: float | None = None
+        self.stimulus_window = StimulusWindow()
+        self.stimulus_window.event_emitted.connect(self._on_stimulus_event)
+        self.stimulus_window.stopped.connect(self._stimulus_stopped)
+        self.stimulus_events: list[StimulusEvent] = []
+        self._last_decoder_value = ""
+        self._ssvep_checked_trials: set[int] = set()
+        self._ssvep_trial_hits = 0
 
         self._build_ui()
         self._build_timers()
@@ -159,17 +163,49 @@ class NeuroScopeWindow(QMainWindow):
 
         paradigm = QGroupBox("范式参数")
         paradigm_form = QFormLayout(paradigm)
-        self.ssvep_targets = QLineEdit("8,10,12,15")
-        self.image_category = QLineEdit("face")
-        self.target_present = QCheckBox("目标实际出现")
-        self.target_present.setChecked(True)
-        self.seen_reported = QCheckBox("受试者报告看见")
+        self.paradigm_form = paradigm_form
+        self.ssvep_targets = QLineEdit("随第二屏刷新率自动生成")
+        self.ssvep_targets.setReadOnly(True)
+        self.image_category = QLineEdit("内置字母 / 数字 / 图形")
+        self.image_category.setReadOnly(True)
+        self.mi_protocol = QLabel("左手 / 右手 / 静息｜2s 注视 + 1s 提示 + 4s 想象 + 2s 休息")
+        self.mi_protocol.setWordWrap(True)
+        self.visual_protocol = QLabel("RSVP 4 项/秒｜看到 ★ 按空格｜目标概率 20%")
+        self.visual_protocol.setWordWrap(True)
+        self.attention_protocol = QLabel("8s 静息 + 30s 连续心算｜输入答案后回车")
+        self.attention_protocol.setWordWrap(True)
+        self.emotion_protocol = QLabel("正向 / 负向 / 中性文字情境｜按 1–9 评价强度")
+        self.emotion_protocol.setWordWrap(True)
         paradigm_form.addRow("SSVEP 频率", self.ssvep_targets)
         paradigm_form.addRow("图像类别", self.image_category)
-        paradigm_form.addRow(self.target_present)
-        paradigm_form.addRow(self.seen_reported)
+        paradigm_form.addRow("运动想象", self.mi_protocol)
+        paradigm_form.addRow("视觉任务", self.visual_protocol)
+        paradigm_form.addRow("注意力任务", self.attention_protocol)
+        paradigm_form.addRow("情绪任务", self.emotion_protocol)
         self.paradigm_group = paradigm
         layout.addWidget(paradigm)
+
+        stimulus = QGroupBox("第二屏刺激（软件同步）")
+        stimulus_layout = QVBoxLayout(stimulus)
+        self.display_select = QComboBox()
+        self._populate_displays()
+        stimulus_buttons = QHBoxLayout()
+        self.stimulus_start_button = QPushButton("开始刺激")
+        self.stimulus_start_button.clicked.connect(self._start_stimulus)
+        self.stimulus_stop_button = QPushButton("停止刺激")
+        self.stimulus_stop_button.clicked.connect(self._stop_stimulus)
+        stimulus_buttons.addWidget(self.stimulus_start_button)
+        stimulus_buttons.addWidget(self.stimulus_stop_button)
+        self.stimulus_status = QLabel("未开始")
+        self.stimulus_status.setWordWrap(True)
+        self.stimulus_status.setObjectName("muted")
+        self.export_events_button = QPushButton("导出事件 CSV")
+        self.export_events_button.clicked.connect(self._export_events)
+        stimulus_layout.addWidget(self.display_select)
+        stimulus_layout.addLayout(stimulus_buttons)
+        stimulus_layout.addWidget(self.stimulus_status)
+        stimulus_layout.addWidget(self.export_events_button)
+        layout.addWidget(stimulus)
 
         buttons = QHBoxLayout()
         self.start_button = QPushButton("启动")
@@ -319,11 +355,105 @@ class NeuroScopeWindow(QMainWindow):
         self._brainco_auto_changed()
 
     def _paradigm_changed(self) -> None:
-        visual = self.paradigm_select.currentText() == "视觉图像识别"
-        self.image_category.setEnabled(visual)
-        self.target_present.setEnabled(visual)
-        self.seen_reported.setEnabled(visual)
-        self.ssvep_targets.setEnabled(self.paradigm_select.currentText() == "SSVEP")
+        if not hasattr(self, "paradigm_form"):
+            return
+        paradigm = self.paradigm_select.currentText()
+        rows = {
+            self.ssvep_targets: paradigm == "SSVEP",
+            self.image_category: paradigm == "视觉图像识别",
+            self.mi_protocol: paradigm == "运动想象",
+            self.visual_protocol: paradigm == "视觉图像识别",
+            self.attention_protocol: paradigm == "注意力",
+            self.emotion_protocol: paradigm == "情绪分类",
+        }
+        for widget, visible in rows.items():
+            self.paradigm_form.setRowVisible(widget, visible)
+        if self.stimulus_window.timer.isActive():
+            self._stop_stimulus()
+
+    def _populate_displays(self) -> None:
+        self.display_select.clear()
+        screens = QApplication.screens()
+        for index, screen in enumerate(screens):
+            geometry = screen.geometry()
+            self.display_select.addItem(
+                f"显示器 {index + 1}｜{geometry.width()}×{geometry.height()}｜{screen.refreshRate():g} Hz", index
+            )
+        if len(screens) > 1:
+            self.display_select.setCurrentIndex(1)
+
+    def _selected_screen(self):
+        screens = QApplication.screens()
+        index = int(self.display_select.currentData() or 0)
+        return screens[min(index, len(screens) - 1)]
+
+    def _start_stimulus(self) -> None:
+        if self.controller is None or self.controller.state is not ConnectionState.RUNNING:
+            QMessageBox.information(self, "请先启动采集", "请先启动模拟源或真机采集，再开始第二屏刺激。")
+            return
+        self.stimulus_events.clear()
+        self._ssvep_checked_trials.clear()
+        self._ssvep_trial_hits = 0
+        screen = self._selected_screen()
+        self.stimulus_window.start_protocol(self.paradigm_select.currentText(), screen)
+        if self.paradigm_select.currentText() == "SSVEP":
+            self.ssvep_targets.setText(", ".join(f"{value:g}" for value in self.stimulus_window.ssvep_frequencies))
+        self.stimulus_status.setText(
+            f"运行中｜{screen.refreshRate():g} Hz｜软件时间戳同步｜Esc 可退出刺激"
+        )
+
+    def _stop_stimulus(self) -> None:
+        self.stimulus_window.stop_protocol()
+
+    def _stimulus_stopped(self) -> None:
+        summary = self.stimulus_window.summary()
+        hit_rate = summary["behavior_hit_rate"]
+        hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
+        self.stimulus_status.setText(
+            f"已停止｜试次 {summary['trials']}｜行为命中率 {hit_rate_text}｜"
+            f"估计丢帧 {summary['missed_frames_estimate']}"
+        )
+
+    def _on_stimulus_event(self, event: StimulusEvent) -> None:
+        self.stimulus_events.append(event)
+        if event.paradigm == "SSVEP" and event.phase == "rest":
+            trial = int(event.payload.get("trial", -1))
+            target = event.payload.get("target_frequency")
+            if trial >= 0 and trial not in self._ssvep_checked_trials and target is not None:
+                self._ssvep_checked_trials.add(trial)
+                self._ssvep_trial_hits += int(self._last_decoder_value == f"{float(target):g} Hz")
+        self.stimulus_status.setText(f"{event.paradigm}｜{event.phase}｜{event.label}｜软件同步")
+
+    def _export_events(self) -> None:
+        if not self.stimulus_events:
+            QMessageBox.information(self, "没有事件", "请先运行至少一个刺激试次。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出刺激事件", "neuroscope-events.csv", "CSV 文件 (*.csv)")
+        if not path:
+            return
+        with Path(path).open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=(
+                    "monotonic_time",
+                    "wall_time",
+                    "eeg_session_sec",
+                    "paradigm",
+                    "phase",
+                    "label",
+                    "payload",
+                ),
+            )
+            writer.writeheader()
+            for event in self.stimulus_events:
+                row = event.as_dict()
+                row["eeg_session_sec"] = (
+                    event.monotonic_time - self.controller.started_at
+                    if self.controller is not None and self.controller.started_at is not None
+                    else ""
+                )
+                row["payload"] = json.dumps(row["payload"], ensure_ascii=False)
+                writer.writerow(row)
 
     def _brainco_auto_changed(self) -> None:
         manual = not self.brainco_auto.isChecked()
@@ -385,6 +515,7 @@ class NeuroScopeWindow(QMainWindow):
         self._set_controls_enabled(False)
 
     def _stop_session(self) -> None:
+        self._stop_stimulus()
         self.wave_timer.stop()
         self.status_timer.stop()
         self.analysis_timer.stop()
@@ -487,26 +618,56 @@ class NeuroScopeWindow(QMainWindow):
         )
 
     def _event(self) -> EEGEvent:
-        targets = _parse_frequencies(self.ssvep_targets.text())
+        if self.stimulus_events:
+            targets = self.stimulus_window.ssvep_frequencies
+        else:
+            targets = frame_locked_frequencies(self._selected_screen().refreshRate())
+        latest = self.stimulus_events[-1] if self.stimulus_events else None
+        payload = {
+            "image_category": "未设置",
+            "target_present": False,
+            "seen_reported": False,
+            "ssvep_targets": targets,
+            "software_sync": True,
+        }
+        if latest is not None:
+            payload.update(latest.payload)
+            payload["stimulus_phase"] = latest.phase
+            payload["stimulus_label"] = latest.label
         return EEGEvent(
-            timestamp=time.time(),
-            name="visual_trial",
-            code=self.image_category.text() or "未设置",
-            payload={
-                "image_category": self.image_category.text() or "未设置",
-                "target_present": self.target_present.isChecked(),
-                "seen_reported": self.seen_reported.isChecked(),
-                "ssvep_targets": targets,
-            },
+            timestamp=latest.wall_time if latest is not None else time.time(),
+            name="stimulus_event" if latest is not None else "continuous_observation",
+            code=latest.label if latest is not None else self.paradigm_select.currentText(),
+            payload=payload,
         )
 
     def _refresh_decoder(self) -> None:
         if self.controller is None or self._analysis_data is None:
             return
+        analysis_data = self._analysis_data
+        if self.stimulus_events and self.stimulus_window.timer.isActive():
+            latest = self.stimulus_events[-1]
+            allowed = {
+                "SSVEP": {"flicker"},
+                "运动想象": {"imagery"},
+                "视觉图像识别": {"stimulus", "response"},
+                "注意力": {"mental_math", "problem", "response"},
+                "情绪分类": {"emotion_imagery", "emotion", "rating"},
+            }
+            if latest.phase not in allowed[self.paradigm_select.currentText()]:
+                self.decoder_result.setText("等待有效刺激阶段")
+                self.decoder_detail.setText(f"当前阶段：{latest.phase}｜{latest.label}")
+                return
+            if latest.paradigm != "视觉图像识别":
+                phase_samples = max(
+                    32,
+                    round((time.monotonic() - latest.monotonic_time) * self.controller.source.metadata.sfreq),
+                )
+                analysis_data = analysis_data[:, -min(phase_samples, analysis_data.shape[1]) :]
         try:
             event = self._event()
             result = PARADIGMS[self.paradigm_select.currentText()].analyze(
-                self.controller.source.metadata, self._analysis_data, (event,)
+                self.controller.source.metadata, analysis_data, (event,)
             )
         except Exception as exc:  # noqa: BLE001
             self.decoder_detail.setText(str(exc))
@@ -515,12 +676,17 @@ class NeuroScopeWindow(QMainWindow):
         self._show_record(event)
 
     def _show_decoder(self, result: ParadigmResult) -> None:
-        self.decoder_name.setText(f"Decoder：{result.decoder_name}　来源：{result.source}　置信度：{result.confidence:.0%}")
+        self._last_decoder_value = result.headline
+        if self.paradigm_select.currentText() == "SSVEP":
+            indicator = f"候选分离度：{result.confidence:.0%}（非准确率）"
+        else:
+            indicator = "未标定快速趋势（不提供准确率）"
+        self.decoder_name.setText(f"Decoder：{result.decoder_name}　来源：{result.source}　{indicator}")
         self.decoder_result.setText(result.headline)
         detail = result.detail
         if result.missing:
             detail += "\n" + "；".join(result.missing)
-        self.decoder_detail.setText(detail + "\n未标定，仅供快速观察。")
+        self.decoder_detail.setText(detail + "\n未标定，仅供快速观察；只有带真实标签的试次评估才能计算准确率。")
         self.decoder_metrics.setRowCount(len(result.metrics))
         for row, (name, value) in enumerate(result.metrics.items()):
             self.decoder_metrics.setItem(row, 0, QTableWidgetItem(name))
@@ -530,13 +696,22 @@ class NeuroScopeWindow(QMainWindow):
     def _show_record(self, event: EEGEvent) -> None:
         if self.controller is None:
             return
+        ssvep_rate = (
+            f"{self._ssvep_trial_hits / len(self._ssvep_checked_trials):.0%}"
+            if self._ssvep_checked_trials
+            else "—"
+        )
         values = (
             ("数据源", self.controller.source.metadata.source_id),
             ("累计样本", str(self.controller.samples_received)),
             ("数据块", str(self.controller.chunks_received)),
-            ("受试者正在观看的图像类别", str(event.payload["image_category"])),
-            ("目标实际出现", "是" if event.payload["target_present"] else "否"),
-            ("受试者报告看见", "是" if event.payload["seen_reported"] else "否"),
+            ("同步方式", "软件时间戳（无硬件 Trigger）"),
+            ("刺激阶段", str(event.payload.get("stimulus_phase", "连续观察"))),
+            ("刺激标签", str(event.payload.get("stimulus_label", event.code))),
+            ("图像类别", str(event.payload.get("image_category", "未设置"))),
+            ("目标实际出现", "是" if event.payload.get("target_present") else "否"),
+            ("已记录刺激事件", str(len(self.stimulus_events))),
+            ("SSVEP 本会话试次匹配率", ssvep_rate),
         )
         self.record_table.setRowCount(len(values))
         for row, (name, value) in enumerate(values):
