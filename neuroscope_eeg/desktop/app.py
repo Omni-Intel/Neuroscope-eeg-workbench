@@ -68,6 +68,7 @@ class NeuroScopeWindow(QMainWindow):
         self._last_decoder_value = ""
         self._ssvep_checked_trials: set[int] = set()
         self._ssvep_trial_hits = 0
+        self._wave_layout_key: tuple[tuple[str, ...], float] | None = None
 
         self._build_ui()
         self._build_timers()
@@ -505,6 +506,7 @@ class NeuroScopeWindow(QMainWindow):
             QMessageBox.critical(self, "无法启动", str(exc))
             return
         self._analysis_data = None
+        self._wave_layout_key = None
         self._fps.reset()
         self._run_started_at = time.monotonic()
         self.wave_timer.start(timer_interval_ms(int(self.target_fps.currentData())))
@@ -565,7 +567,8 @@ class NeuroScopeWindow(QMainWindow):
         data, names, sfreq = latest
         display = brainco_display_preprocess(data, sfreq) if self._is_brainco() else data
         self._analysis_data = display
-        self._apply_wave_data(display, names, sfreq, independent_scale=self._is_brainco())
+        if self.tabs.currentIndex() == 0:
+            self._apply_wave_data(display, names, sfreq, independent_scale=self._is_brainco())
         self._fps.tick()
 
     def _apply_wave_data(
@@ -592,20 +595,28 @@ class NeuroScopeWindow(QMainWindow):
                 curve.show()
             else:
                 curve.hide()
-        ticks = [(float(offsets[index]), names[index]) for index in range(n_show)]
-        self.wave_plot.getAxis("left").setTicks([ticks])
-        self.wave_plot.setXRange(-WAVE_WINDOW_SEC, 0.0, padding=0.0)
-        self.wave_plot.setYRange(-2.0, max(3.0, n_show * 3.0), padding=0.01)
+        layout_key = (names[:n_show], sfreq)
+        if layout_key != self._wave_layout_key:
+            ticks = [(float(offsets[index]), names[index]) for index in range(n_show)]
+            self.wave_plot.getAxis("left").setTicks([ticks])
+            self.wave_plot.setXRange(-WAVE_WINDOW_SEC, 0.0, padding=0.0)
+            self.wave_plot.setYRange(-2.0, max(3.0, n_show * 3.0), padding=0.01)
+            self._wave_layout_key = layout_key
 
     def _refresh_analysis(self) -> None:
         if self.controller is None or self._analysis_data is None or self._analysis_data.shape[1] < 8:
             return
+        active_tab = self.tabs.currentIndex()
+        if active_tab not in (1, 2):
+            return
         metadata = self.controller.source.metadata
-        freqs, psd = power_spectrum(self._analysis_data, metadata.sfreq)
-        spectrum_db = 10.0 * np.log10(np.mean(psd, axis=0) + 1e-12)
-        self.spectrum_curve.setData(freqs, spectrum_db)
-        quality = signal_quality(self._analysis_data, metadata.channel_names)
-        self._show_quality(quality, metadata.channel_names)
+        if active_tab == 1:
+            freqs, psd = power_spectrum(self._analysis_data, metadata.sfreq)
+            spectrum_db = 10.0 * np.log10(np.mean(psd, axis=0) + 1e-12)
+            self.spectrum_curve.setData(freqs, spectrum_db)
+        else:
+            quality = signal_quality(self._analysis_data, metadata.channel_names)
+            self._show_quality(quality, metadata.channel_names)
 
     def _show_quality(self, quality: QualityReport, names: tuple[str, ...]) -> None:
         rms = quality.rms_uv[:MAX_VISIBLE_CHANNELS]
@@ -643,6 +654,8 @@ class NeuroScopeWindow(QMainWindow):
 
     def _refresh_decoder(self) -> None:
         if self.controller is None or self._analysis_data is None:
+            return
+        if self.tabs.currentIndex() != 3 and not self.stimulus_window.timer.isActive():
             return
         analysis_data = self._analysis_data
         if self.stimulus_events and self.stimulus_window.timer.isActive():

@@ -80,3 +80,34 @@ def test_session_rebuilds_buffer_after_source_metadata_changes() -> None:
     assert controller.error is None
     assert controller.buffer.metadata.channel_names == ("C3", "C4")
     assert controller.samples_received > 0
+
+
+class _EmptySource:
+    def __init__(self) -> None:
+        self.metadata = SourceMetadata.eeg("empty", "test", 100.0, ("Cz",))
+        self.read_count = 0
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+    def read_chunk(self) -> EEGChunk:
+        self.read_count += 1
+        return EEGChunk(
+            self.metadata,
+            np.empty((1, 0), dtype=np.float32),
+            np.empty(0, dtype=float),
+            self.read_count,
+        )
+
+
+def test_session_yields_when_source_has_no_new_samples() -> None:
+    source = _EmptySource()
+    controller = SessionController(source)
+    controller.start()
+    time.sleep(0.05)
+    controller.stop()
+
+    assert source.read_count < 100

@@ -2,4 +2,4 @@ from neuroscope_eeg import __version__
 
 
 def test_package_version() -> None:
-    assert __version__ == "0.3.1"
+    assert __version__ == "0.3.2"

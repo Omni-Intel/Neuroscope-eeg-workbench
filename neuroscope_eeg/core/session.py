@@ -45,6 +45,8 @@ class SessionController:
                     self.chunks_received += 1
                     self.samples_received += chunk.n_samples
                     self.last_data_at = time.monotonic()
+                else:
+                    time.sleep(0.002)
         except Exception as exc:  # noqa: BLE001
             self.error = str(exc)
             self.state = ConnectionState.ERROR

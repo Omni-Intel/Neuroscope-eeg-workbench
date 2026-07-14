@@ -72,6 +72,7 @@ class SSVEPBaselineDecoder:
         t = np.arange(selected.shape[1]) / metadata.sfreq
         scores: dict[float, float] = {}
         filter_lows = (6.0, 14.0, 22.0)
+        filtered_bands = [_filtered(selected, metadata.sfreq, low_hz, 45.0) for low_hz in filter_lows]
         for target in targets:
             refs = []
             for harmonic in range(1, 4):
@@ -81,8 +82,7 @@ class SSVEPBaselineDecoder:
                 refs.extend((np.sin(2 * np.pi * frequency * t), np.cos(2 * np.pi * frequency * t)))
             reference = np.asarray(refs)
             sub_scores = []
-            for index, low_hz in enumerate(filter_lows):
-                filtered = _filtered(selected, metadata.sfreq, low_hz, 45.0)
+            for index, filtered in enumerate(filtered_bands):
                 sub_scores.append(_canonical_correlation(filtered, reference) ** 2 / ((index + 1) ** 1.25))
             scores[target] = float(np.sum(sub_scores))
         ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
