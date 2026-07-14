@@ -21,6 +21,12 @@ window._apply_wave_data(np.zeros((32, 100), dtype=np.float32), names, 250.0)
 assert window.target_fps.currentData() == 30
 assert len(window.wave_curves) == MAX_VISIBLE_CHANNELS == 32
 assert [id(curve) for curve in window.wave_curves] == curve_ids
+screen = app.primaryScreen()
+window.stimulus_window.start_protocol("SSVEP", screen)
+app.processEvents()
+assert window.stimulus_window.isVisible()
+assert window.stimulus_window.geometry() == screen.geometry()
+window.stimulus_window.stop_protocol()
 window.close()
 app.processEvents()
 """

@@ -63,15 +63,14 @@ class StimulusWindow(QWidget):
         self._last_problem_at = 0.0
         self._ssvep_target_index = 0
         self.trials = self.targets = self.hits = self.responses = self.missed_frames = 0
-        self.setGeometry(screen.geometry())
         self.winId()
         if self.windowHandle() is not None:
             self.windowHandle().setScreen(screen)
-        self.showFullScreen()
-        self.activateWindow()
-        self.setFocus()
+        self.showNormal()
+        self._place_on_screen(screen)
         interval = max(4, round(1000.0 / self.refresh_hz)) if paradigm == "SSVEP" else 16
         self.timer.start(interval)
+        QTimer.singleShot(80, lambda: self._place_on_screen(screen) if self.timer.isActive() else None)
         self._emit(
             "start",
             paradigm,
@@ -81,6 +80,19 @@ class StimulusWindow(QWidget):
                 "ssvep_frequencies": self.ssvep_frequencies if paradigm == "SSVEP" else (),
             },
         )
+
+    def _place_on_screen(self, screen) -> None:
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.setScreen(screen)
+        self.setGeometry(screen.geometry())
+        self.show()
+        self.setGeometry(screen.geometry())
+        self.raise_()
+        self.activateWindow()
+        if handle is not None:
+            handle.requestActivate()
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
     def stop_protocol(self) -> None:
         if not self.timer.isActive():

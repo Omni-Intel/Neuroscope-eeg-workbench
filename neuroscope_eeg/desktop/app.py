@@ -400,7 +400,7 @@ class NeuroScopeWindow(QMainWindow):
         if self.paradigm_select.currentText() == "SSVEP":
             self.ssvep_targets.setText(", ".join(f"{value:g}" for value in self.stimulus_window.ssvep_frequencies))
         self.stimulus_status.setText(
-            f"运行中｜{screen.refreshRate():g} Hz｜软件时间戳同步｜Esc 可退出刺激"
+            f"运行中｜{self.display_select.currentText()}｜软件时间戳同步｜Esc 可退出刺激"
         )
 
     def _stop_stimulus(self) -> None:
