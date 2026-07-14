@@ -9,3 +9,14 @@ outputs/
 .pytest_cache/
 .DS_Store
 .superpowers/
+Data/
+RawData/
+movie_data/
+subject_data/
+*.edf
+*.bdf
+*.fif
+*.npz
+*.npy
+*.mat
+*.csv

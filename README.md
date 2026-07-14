@@ -48,7 +48,23 @@ py -3.12 -m venv .venv312
 .venv312\Scripts\python.exe -m neuroscope_eeg.desktop.app
 ```
 
-安装完成后也可以直接双击 `start-neuroscope-desktop.bat`（或中文同名入口）。启动脚本会优先使用项目的 `.venv312`，其次尝试采集电脑上的 `omni` 环境。
+安装完成后也可以直接双击 `start-neuroscope-desktop.bat`（或中文同名入口）。启动脚本会优先使用项目的 `.venv312`，其次使用当前激活的 conda 环境，再尝试常见位置中的 `oi` 或 `omni`。
+
+### 使用现有 oi / omni 环境
+
+可以直接使用采集电脑已有的 `oi` 环境，前提是该环境使用 Python 3.12，并已安装桌面依赖：
+
+```cmd
+conda activate oi
+python -m pip install -r requirements-desktop.txt
+python -m neuroscope_eeg.desktop.app
+```
+
+启动脚本依次寻找项目 `.venv312`、当前激活的 conda 环境、`oi` 和 `omni`。博睿康还需要先运行 JellyFish，并保留本机 `oi-mi` 目录中的采集接口；这些厂商程序和本地采集代码不会上传到仓库。BrainCo 还需要安装 SDK：
+
+```cmd
+python -m pip install -r requirements-brainco.txt
+```
 
 测试强脑设备时再安装厂商 SDK 依赖：
 
