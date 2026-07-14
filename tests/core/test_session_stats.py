@@ -40,3 +40,43 @@ def test_session_tracks_received_chunks_samples_and_freshness() -> None:
     assert controller.chunks_received >= 1
     assert controller.samples_received >= 2
     assert controller.last_data_age_sec() is not None
+
+
+class _MetadataChangingSource:
+    def __init__(self) -> None:
+        self.metadata = SourceMetadata.eeg("changing", "test", 100.0, ("C3", "C4", "Cz"))
+        self.sequence = 0
+        self.started = False
+
+    def start(self) -> None:
+        self.metadata = SourceMetadata.eeg("changing", "test", 100.0, ("C3", "C4"))
+        self.started = True
+
+    def stop(self) -> None:
+        self.started = False
+
+    def read_chunk(self) -> EEGChunk:
+        if not self.started:
+            raise RuntimeError("not started")
+        time.sleep(0.001)
+        sequence = self.sequence
+        self.sequence += 10
+        return EEGChunk(
+            self.metadata,
+            np.ones((2, 10), dtype=np.float32),
+            np.arange(sequence, sequence + 10, dtype=float) / 100.0,
+            sequence,
+        )
+
+
+def test_session_rebuilds_buffer_after_source_metadata_changes() -> None:
+    controller = SessionController(_MetadataChangingSource(), buffer_sec=1.0)
+    controller.start()
+    deadline = time.monotonic() + 1.0
+    while controller.samples_received == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    controller.stop()
+
+    assert controller.error is None
+    assert controller.buffer.metadata.channel_names == ("C3", "C4")
+    assert controller.samples_received > 0

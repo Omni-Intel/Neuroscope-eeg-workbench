@@ -11,7 +11,8 @@ from neuroscope_eeg.core.models import ConnectionState, EEGChunk
 class SessionController:
     def __init__(self, source: EEGSource, buffer_sec: float = 30.0) -> None:
         self.source = source
-        self.buffer = RollingBuffer(source.metadata, buffer_sec)
+        self._buffer_sec = buffer_sec
+        self.buffer = RollingBuffer(source.metadata, self._buffer_sec)
         self.state = ConnectionState.IDLE
         self.error: str | None = None
         self.started_at: float | None = None
@@ -33,6 +34,8 @@ class SessionController:
     def _run(self) -> None:
         try:
             self.source.start()
+            if self.buffer.metadata != self.source.metadata:
+                self.buffer = RollingBuffer(self.source.metadata, self._buffer_sec)
             self.started_at = time.monotonic()
             self.state = ConnectionState.RUNNING
             while not self._stop.is_set():
