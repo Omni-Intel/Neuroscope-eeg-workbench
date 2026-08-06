@@ -6,7 +6,7 @@ NeuroScope 提供高刷新率桌面控制台、实时波形、频谱、信号质
 
 ## 已支持功能
 
-- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BrainCo SDK
+- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BCIGo SDK 1.0.2
 - SSVEP：滤波组谐波 CCA，直接输出候选刺激频率
 - 运动想象：C3/C4 的 µ/β 侧化趋势
 - 视觉任务：枕区视觉响应；独立记录图像类别、目标是否出现、是否报告看见
@@ -69,7 +69,7 @@ python -m pip install -r requirements-desktop.txt
 python -m neuroscope_eeg.desktop.app
 ```
 
-启动脚本依次寻找项目 `.venv312`、当前激活的 conda 环境、`oi` 和 `omni`。博睿康还需要先运行 JellyFish，并保留本机 `oi-mi` 目录中的采集接口；这些厂商程序和本地采集代码不会上传到仓库。BrainCo 还需要安装 SDK：
+启动脚本依次寻找项目 `.venv312`、当前激活的 conda 环境、`oi` 和 `omni`。博睿康还需要先运行 JellyFish，并保留本机 `oi-mi` 目录中的采集接口；这些厂商程序和本地采集代码不会上传到仓库。BrainCo 使用仓库内置的 BCIGo 适配器；Windows 采集电脑安装 SDK：
 
 ```cmd
 python -m pip install -r requirements-brainco.txt
@@ -81,7 +81,7 @@ python -m pip install -r requirements-brainco.txt
 .venv312\Scripts\python.exe -m pip install -r requirements-brainco.txt
 ```
 
-博睿康需要先打开 JellyFish 实时转发，默认地址为 `127.0.0.1:8712`。强脑模式需要填写采集电脑上的 `oi-mi` 路径，并确保 SDK 可以发现或连接设备。
+博睿康需要先打开 JellyFish 实时转发，默认地址为 `127.0.0.1:8712`。强脑模式不再需要 `oi-mi` 路径；安装 `bcigo-sdk==1.0.2` 后，使用自动发现或填写设备 IP 与端口。该 SDK 当前提供 Windows x86-64 与 Linux wheel，macOS 只支持本工作台的模拟与回放模式。
 
 BrainCo 实时页会显示累计样本、缓冲样本和最近数据时间。波形经过 1–45 Hz 显示滤波并逐通道独立缩放；官方 32 通道顺序和该处理只作用于 BrainCo，Neuracle 仍使用原有通道和显示链路。
 
@@ -113,7 +113,7 @@ BrainCo 实时页会显示累计样本、缓冲样本和最近数据时间。波
 强脑：
 
 ```cmd
-.venv312\Scripts\python.exe realtime_eeg_viewer.py --mode brainco --oi-mi-path "D:\oi-mi" --sfreq 250 --n-channels 32 --stim-freqs 8,10,12,15
+.venv312\Scripts\python.exe realtime_eeg_viewer.py --mode brainco --sfreq 250 --n-channels 32 --stim-freqs 8,10,12,15
 ```
 
 ## 仓库内容

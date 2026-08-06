@@ -45,8 +45,9 @@
 - `BrainCoSource`：从旧兼容入口迁入或替换为本仓库适配器，不再接受
   `oi_mi_path`。
 - `legacy.py`：保留模块名以保护 UI 调用点，但直接构建新的本地 BrainCo 源。
-- `realtime_eeg_viewer.py`：移除 `--oi-mi-path` 参数和动态 `sys.path` 注入，
-  保留 `--brainco-*` 连接参数。
+- `realtime_eeg_viewer.py`：BrainCo 分支移除动态 `sys.path` 注入，不再读取
+  `--oi-mi-path`；该参数仅继续服务既有 Neuracle 入口。保留 `--brainco-*`
+  连接参数。
 
 SDK 未安装、当前平台无可用 wheel、找不到设备、没有收到 EEG 样本或协议设置
 不匹配时，均在连接阶段给出可操作错误；不回退到旧 SDK，也不伪造数据。

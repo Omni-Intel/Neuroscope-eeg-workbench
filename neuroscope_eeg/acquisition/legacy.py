@@ -68,7 +68,6 @@ def build_neuracle_source(
 
 
 def build_brainco_source(
-    oi_mi_path: str,
     sfreq: float,
     n_channels: int,
     brainco_addr: str = "",
@@ -77,7 +76,6 @@ def build_brainco_source(
 ) -> LegacyRealtimeSource:
     return LegacyRealtimeSource(
         LegacyBrainCoSource(
-            oi_mi_path=Path(oi_mi_path).expanduser(),
             sfreq=sfreq,
             n_channels=n_channels,
             buffer_sec=30.0,
@@ -89,6 +87,6 @@ def build_brainco_source(
             start_retries=2,
             eeg_gain=6,
             signal_source="NORMAL",
-            device_id="eeg-cap",
+            device_id="bcigo",
         )
     )

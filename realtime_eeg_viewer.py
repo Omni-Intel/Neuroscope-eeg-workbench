@@ -311,7 +311,6 @@ class NeuracleSource:
 class BrainCoSource:
     def __init__(
         self,
-        oi_mi_path: Path,
         sfreq: float,
         n_channels: int,
         buffer_sec: float,
@@ -325,8 +324,7 @@ class BrainCoSource:
         signal_source: str,
         device_id: str,
     ) -> None:
-        sys.path.insert(0, str(oi_mi_path.expanduser()))
-        from acquisition.brainco_acquirer import BrainCoAcquirer  # type: ignore
+        from neuroscope_eeg.acquisition.brainco import BrainCoAcquirer
 
         self.n_channels = min(max(int(n_channels), 1), 32)
         self.acquirer = BrainCoAcquirer(
@@ -665,7 +663,12 @@ class RealtimeViewer:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Realtime EEG viewer for Neuracle and BrainCo.")
     parser.add_argument("--mode", choices=["simulated", "neuracle", "brainco"], default="simulated")
-    parser.add_argument("--oi-mi-path", type=Path, default=Path("/Users/mac/Documents/GitHub/oi-mi"))
+    parser.add_argument(
+        "--oi-mi-path",
+        type=Path,
+        default=Path("/Users/mac/Documents/GitHub/oi-mi"),
+        help="Neuracle adapter path only; ignored by BrainCo BCIGo mode.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8712)
     parser.add_argument("--sfreq", type=float, default=1000.0, help="Must match JellyFish forwarding sample rate.")
@@ -688,7 +691,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--brainco-start-retries", type=int, default=2)
     parser.add_argument("--brainco-gain", type=int, default=6)
     parser.add_argument("--brainco-signal-source", default="NORMAL")
-    parser.add_argument("--brainco-device-id", default="eeg-cap")
+    parser.add_argument("--brainco-device-id", default="bcigo")
     parser.add_argument("--save-frame", type=Path, default=None, help="Render one PNG frame and exit.")
     return parser.parse_args(argv)
 
@@ -698,7 +701,6 @@ def build_source(args: argparse.Namespace):
         return SimulatedSource(sfreq=args.sfreq, n_channels=args.n_channels, stim_freqs=parse_frequency_list(args.stim_freqs))
     if args.mode == "brainco":
         return BrainCoSource(
-            oi_mi_path=args.oi_mi_path,
             sfreq=args.sfreq,
             n_channels=args.n_channels,
             buffer_sec=args.buffer_sec,
