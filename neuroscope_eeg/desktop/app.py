@@ -137,7 +137,7 @@ class NeuroScopeWindow(QMainWindow):
         replay_layout.addWidget(replay_browse)
         layout.addWidget(self.replay_group)
 
-        self.device_group = QGroupBox("真机公共设置")
+        self.device_group = QGroupBox("博睿康 Neuracle 设置")
         device_form = QFormLayout(self.device_group)
         self.oi_mi_path = QLineEdit()
         self.oi_mi_path.setPlaceholderText("采集电脑上的 oi-mi 目录")
@@ -369,7 +369,7 @@ class NeuroScopeWindow(QMainWindow):
         is_brainco = source == "强脑 BrainCo"
         self.channels.setMaximum(32 if is_brainco else 64)
         self.replay_group.setVisible(is_replay)
-        self.device_group.setVisible(is_neuracle or is_brainco)
+        self.device_group.setVisible(is_neuracle)
         self.neuracle_group.setVisible(is_neuracle)
         self.brainco_group.setVisible(is_brainco)
         if is_neuracle:
@@ -595,7 +595,6 @@ class NeuroScopeWindow(QMainWindow):
             )
         if label == "强脑 BrainCo":
             return build_brainco_source(
-                self.oi_mi_path.text(),
                 sfreq,
                 min(n_channels, 32),
                 self.brainco_ip.text(),

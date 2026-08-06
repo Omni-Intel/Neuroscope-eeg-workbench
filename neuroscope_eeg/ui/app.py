@@ -78,7 +78,7 @@ def _build_source(
     if source_label == "博睿康 Neuracle":
         return build_neuracle_source(oi_mi_path, host, port, sfreq, n_channels)
     if source_label == "强脑 BrainCo":
-        return build_brainco_source(oi_mi_path, sfreq, min(n_channels, 32), brainco_addr, brainco_port, brainco_auto)
+        return build_brainco_source(sfreq, min(n_channels, 32), brainco_addr, brainco_port, brainco_auto)
     channels = (
         ("Fp1", "Fp2", "Fpz", "T3", "T4")
         if n_channels == 5
@@ -184,13 +184,14 @@ def main() -> None:
         sfreq = st.number_input("采样率 Hz", min_value=1.0, max_value=5000.0, value=default_sfreq, step=50.0)
         n_channels = st.number_input("通道数", min_value=1, max_value=64, value=default_channels, step=1)
         replay_path = st.text_input("NPZ 回放文件", value="")
-        oi_mi_path = st.text_input("oi-mi 路径", value="", help="仅真机模式需要；填写采集电脑上的实际目录")
+        oi_mi_path = ""
         host = "127.0.0.1"
         port = 8712
         brainco_addr = ""
         brainco_port = 0
         brainco_auto = True
         if source_label == "博睿康 Neuracle":
+            oi_mi_path = st.text_input("oi-mi 路径", value="", help="填写采集电脑上的博睿康采集接口目录")
             host = st.text_input("JellyFish host", value="127.0.0.1")
             port = int(st.number_input("JellyFish port", min_value=1, max_value=65535, value=8712, step=1))
         if source_label == "强脑 BrainCo":
