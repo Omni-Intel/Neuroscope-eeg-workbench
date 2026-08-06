@@ -41,6 +41,7 @@ from neuroscope_eeg.core.models import ConnectionState, EEGEvent
 from neuroscope_eeg.core.session import SessionController
 from neuroscope_eeg.desktop.performance import FpsTracker, fps_level, timer_interval_ms
 from neuroscope_eeg.desktop.protocols import StimulusEvent, frame_locked_frequencies
+from neuroscope_eeg.desktop.audio import AudioUnavailableError
 from neuroscope_eeg.desktop.stimulus import StimulusWindow
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
 from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
@@ -177,16 +178,22 @@ class NeuroScopeWindow(QMainWindow):
         self.attention_protocol.setWordWrap(True)
         self.emotion_protocol = QLabel("正向 / 负向 / 中性文字情境｜按 1–9 评价强度")
         self.emotion_protocol.setWordWrap(True)
+        self.assr_protocol = QLabel("10s 安静 + 20s 40 Hz 调幅音｜推荐 T3/T4｜需确认设备带宽")
+        self.assr_protocol.setWordWrap(True)
+        self.oddball_protocol = QLabel("80% 标准音 + 20% 偏差音｜听到高音按空格｜ERP 时序待真机校准")
+        self.oddball_protocol.setWordWrap(True)
         paradigm_form.addRow("SSVEP 频率", self.ssvep_targets)
         paradigm_form.addRow("图像类别", self.image_category)
         paradigm_form.addRow("运动想象", self.mi_protocol)
         paradigm_form.addRow("视觉任务", self.visual_protocol)
         paradigm_form.addRow("注意力任务", self.attention_protocol)
         paradigm_form.addRow("情绪任务", self.emotion_protocol)
+        paradigm_form.addRow("听觉 ASSR", self.assr_protocol)
+        paradigm_form.addRow("听觉 Oddball", self.oddball_protocol)
         self.paradigm_group = paradigm
         layout.addWidget(paradigm)
 
-        stimulus = QGroupBox("第二屏刺激（软件同步）")
+        stimulus = QGroupBox("刺激呈现（软件同步）")
         stimulus_layout = QVBoxLayout(stimulus)
         self.display_select = QComboBox()
         self._populate_displays()
@@ -284,6 +291,9 @@ class NeuroScopeWindow(QMainWindow):
         self.spectrum_plot = self._new_plot("平均功率频谱", "功率 dB")
         self.spectrum_plot.setLabel("bottom", "频率", units="Hz")
         self.spectrum_curve = self.spectrum_plot.plot(pen=pg.mkPen("#38bdf8", width=2))
+        self.assr_marker = pg.InfiniteLine(pos=40.0, angle=90, pen=pg.mkPen("#f97316", width=2))
+        self.spectrum_plot.addItem(self.assr_marker)
+        self.assr_marker.hide()
         layout.addWidget(self.spectrum_plot)
         return tab
 
@@ -366,9 +376,12 @@ class NeuroScopeWindow(QMainWindow):
             self.visual_protocol: paradigm == "视觉图像识别",
             self.attention_protocol: paradigm == "注意力",
             self.emotion_protocol: paradigm == "情绪分类",
+            self.assr_protocol: paradigm == "听觉 ASSR",
+            self.oddball_protocol: paradigm == "听觉 Oddball",
         }
         for widget, visible in rows.items():
             self.paradigm_form.setRowVisible(widget, visible)
+        self.assr_marker.setVisible(paradigm == "听觉 ASSR")
         if self.stimulus_window.timer.isActive():
             self._stop_stimulus()
 
@@ -396,7 +409,12 @@ class NeuroScopeWindow(QMainWindow):
         self._ssvep_checked_trials.clear()
         self._ssvep_trial_hits = 0
         screen = self._selected_screen()
-        self.stimulus_window.start_protocol(self.paradigm_select.currentText(), screen)
+        try:
+            self.stimulus_window.start_protocol(self.paradigm_select.currentText(), screen)
+        except AudioUnavailableError as exc:
+            QMessageBox.warning(self, "音频不可用", str(exc))
+            self.stimulus_status.setText(f"未启动｜{exc}")
+            return
         if self.paradigm_select.currentText() == "SSVEP":
             self.ssvep_targets.setText(", ".join(f"{value:g}" for value in self.stimulus_window.ssvep_frequencies))
         self.stimulus_status.setText(
@@ -412,10 +430,12 @@ class NeuroScopeWindow(QMainWindow):
         hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
         self.stimulus_status.setText(
             f"已停止｜试次 {summary['trials']}｜行为命中率 {hit_rate_text}｜"
-            f"估计丢帧 {summary['missed_frames_estimate']}"
+            f"误报 {summary['false_alarms']}｜估计丢帧 {summary['missed_frames_estimate']}"
         )
 
     def _on_stimulus_event(self, event: StimulusEvent) -> None:
+        if self.controller is not None:
+            event.payload.setdefault("eeg_sample_index", self.controller.samples_received)
         self.stimulus_events.append(event)
         if event.paradigm == "SSVEP" and event.phase == "rest":
             trial = int(event.payload.get("trial", -1))
@@ -658,6 +678,10 @@ class NeuroScopeWindow(QMainWindow):
         if self.tabs.currentIndex() != 3 and not self.stimulus_window.timer.isActive():
             return
         analysis_data = self._analysis_data
+        if self.paradigm_select.currentText() == "听觉 ASSR":
+            snapshot = self.controller.buffer.latest_available(10.0)
+            if snapshot is not None:
+                analysis_data = snapshot[0]
         if self.stimulus_events and self.stimulus_window.timer.isActive():
             latest = self.stimulus_events[-1]
             allowed = {
@@ -666,6 +690,8 @@ class NeuroScopeWindow(QMainWindow):
                 "视觉图像识别": {"stimulus", "response"},
                 "注意力": {"mental_math", "problem", "response"},
                 "情绪分类": {"emotion_imagery", "emotion", "rating"},
+                "听觉 ASSR": {"stimulation"},
+                "听觉 Oddball": {"standard", "deviant", "response"},
             }
             if latest.phase not in allowed[self.paradigm_select.currentText()]:
                 self.decoder_result.setText("等待有效刺激阶段")

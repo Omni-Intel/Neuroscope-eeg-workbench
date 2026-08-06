@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
 
-from neuroscope_eeg.analysis.spectrum import band_power, power_spectrum
+from neuroscope_eeg.analysis.spectrum import band_power, power_spectrum, ssvep_snr
 from neuroscope_eeg.core.models import EEGEvent, SourceMetadata
 from neuroscope_eeg.decoders.base import DecoderResult
 
@@ -213,10 +213,92 @@ class EmotionBaselineDecoder:
         )
 
 
+class AuditoryASSRBaselineDecoder:
+    name = "40 Hz 听觉频率跟随"
+
+    def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
+        selected = _indices(metadata.channel_names, ("T3", "T4", "T7", "T8"))
+        missing: tuple[str, ...] = ()
+        if not selected:
+            selected = list(range(metadata.n_channels))
+            missing = ("未识别到 T3/T4 或 T7/T8，暂用全部可用通道",)
+        duration_sec = data.shape[1] / metadata.sfreq
+        if metadata.sfreq < 100.0 or duration_sec < 5.0:
+            return DecoderResult(
+                value="尚未解码",
+                confidence=0.0,
+                detail="40 Hz ASSR 需要至少 100 Hz 采样率和 5 秒有效刺激数据。",
+                metrics={"有效数据秒数": duration_sec, "采样率 Hz": metadata.sfreq},
+                missing=missing,
+            )
+
+        freqs, psd = power_spectrum(np.asarray(data[selected], dtype=np.float32), metadata.sfreq)
+        ratio = ssvep_snr(freqs, psd, (40.0,))[40.0]
+        snr_db = float(10.0 * np.log10(max(ratio, 1e-12)))
+        center = int(np.argmin(np.abs(freqs - 40.0)))
+        channel_power_db = 10.0 * np.log10(psd[:, center] + 1e-12)
+        if snr_db >= 8.0:
+            value = "40 Hz 频率跟随明显"
+        elif snr_db >= 3.0:
+            value = "40 Hz 频率跟随可见"
+        else:
+            value = "40 Hz 频率跟随尚不明显"
+
+        metrics: dict[str, float | str] = {
+            "40 Hz SNR dB": snr_db,
+            "40 Hz 平均功率 dB": float(np.mean(channel_power_db)),
+            "有效数据秒数": duration_sec,
+        }
+        for index, channel_index in enumerate(selected):
+            metrics[f"{metadata.channel_names[channel_index]} 40 Hz dB"] = float(channel_power_db[index])
+        return DecoderResult(
+            value=value,
+            confidence=float(np.clip((snr_db + 1.0) / 12.0, 0.0, 0.8)),
+            detail="频谱信噪比用于观察听觉频率跟随趋势，不是听力或临床诊断。",
+            metrics=metrics,
+            missing=missing,
+        )
+
+
+class AuditoryOddballBaselineDecoder:
+    name = "听觉偏差响应"
+
+    def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
+        payload = event.payload if event is not None else {}
+        trials = int(payload.get("trials", 0))
+        targets = int(payload.get("targets", 0))
+        hits = int(payload.get("hits", 0))
+        false_alarms = int(payload.get("false_alarms", 0))
+        hit_rate = hits / targets if targets else 0.0
+        metrics: dict[str, float | str] = {
+            "已呈现试次": float(trials),
+            "偏差音数量": float(targets),
+            "行为命中率": float(hit_rate),
+            "误报": float(false_alarms),
+            "同步状态": "待真机校准",
+        }
+        missing_items: list[str] = []
+        if not _indices(metadata.channel_names, ("Fpz",)):
+            missing_items.append("Fpz")
+        if not _indices(metadata.channel_names, ("T3", "T7")):
+            missing_items.append("T3/T7")
+        if not _indices(metadata.channel_names, ("T4", "T8")):
+            missing_items.append("T4/T8")
+        return DecoderResult(
+            value="ERP 时序待校准",
+            confidence=0.0,
+            detail="设备不支持事件标记；声音事件已记录，需完成设备时间戳映射和音频延迟校准后再输出 ERP。",
+            metrics=metrics,
+            missing=tuple(missing_items),
+        )
+
+
 BASELINE_DECODERS: Mapping[str, object] = {
     "SSVEP": SSVEPBaselineDecoder(),
     "运动想象": MotorImageryBaselineDecoder(),
     "视觉图像识别": VisualBaselineDecoder(),
     "注意力": AttentionBaselineDecoder(),
     "情绪分类": EmotionBaselineDecoder(),
+    "听觉 ASSR": AuditoryASSRBaselineDecoder(),
+    "听觉 Oddball": AuditoryOddballBaselineDecoder(),
 }

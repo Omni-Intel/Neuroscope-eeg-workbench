@@ -8,14 +8,15 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import QWidget
 
-from neuroscope_eeg.desktop.protocols import StimulusEvent, frame_locked_frequencies
+from neuroscope_eeg.desktop.audio import AudioPlayer
+from neuroscope_eeg.desktop.protocols import StimulusEvent, frame_locked_frequencies, generate_oddball_sequence
 
 
 class StimulusWindow(QWidget):
     event_emitted = Signal(object)
     stopped = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, audio_player=None) -> None:
         super().__init__()
         self.setWindowTitle("NeuroScope 刺激呈现")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -44,6 +45,11 @@ class StimulusWindow(QWidget):
         self._emotion_category = "中性"
         self._emotion_prompt = "平静地观察呼吸"
         self._ssvep_target_index = 0
+        self._audio_player = audio_player
+        self._oddball_sequence = generate_oddball_sequence(1000)
+        self._oddball_index = 0
+        self._next_tone_at = 0.0
+        self._false_alarms = 0
         self.trials = 0
         self.targets = 0
         self.hits = 0
@@ -51,6 +57,8 @@ class StimulusWindow(QWidget):
         self.missed_frames = 0
 
     def start_protocol(self, paradigm: str, screen) -> None:
+        if paradigm in {"听觉 ASSR", "听觉 Oddball"} and self._audio_player is None:
+            self._audio_player = AudioPlayer()
         self.paradigm = paradigm
         self.refresh_hz = max(30.0, float(screen.refreshRate()))
         self.ssvep_frequencies = frame_locked_frequencies(self.refresh_hz)
@@ -62,6 +70,11 @@ class StimulusWindow(QWidget):
         self._last_item_at = 0.0
         self._last_problem_at = 0.0
         self._ssvep_target_index = 0
+        self._oddball_index = 0
+        self._next_tone_at = self.started_at + 1.0
+        self._false_alarms = 0
+        self.current_target = False
+        self._responded_to_item = False
         self.trials = self.targets = self.hits = self.responses = self.missed_frames = 0
         self.winId()
         if self.windowHandle() is not None:
@@ -95,6 +108,8 @@ class StimulusWindow(QWidget):
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
     def stop_protocol(self) -> None:
+        if self._audio_player is not None:
+            self._audio_player.stop()
         if not self.timer.isActive():
             self.hide()
             return
@@ -104,13 +119,18 @@ class StimulusWindow(QWidget):
         self.stopped.emit()
 
     def summary(self) -> dict[str, float | int | None]:
-        accuracy = self.hits / self.targets if self.targets and self.paradigm in {"视觉图像识别", "注意力"} else None
+        accuracy = (
+            self.hits / self.targets
+            if self.targets and self.paradigm in {"视觉图像识别", "注意力", "听觉 Oddball"}
+            else None
+        )
         return {
             "trials": self.trials,
             "targets": self.targets,
             "hits": self.hits,
             "responses": self.responses,
             "behavior_hit_rate": accuracy,
+            "false_alarms": self._false_alarms,
             "missed_frames_estimate": self.missed_frames,
         }
 
@@ -137,6 +157,10 @@ class StimulusWindow(QWidget):
             self._update_rsvp(now)
         elif self.paradigm == "注意力":
             self._update_attention(elapsed, now)
+        elif self.paradigm == "听觉 ASSR":
+            self._update_assr(elapsed)
+        elif self.paradigm == "听觉 Oddball":
+            self._update_oddball(now)
         else:
             self._update_emotion(elapsed)
         self.update()
@@ -230,6 +254,57 @@ class StimulusWindow(QWidget):
             self._emit("emotion", category, {"prompt": prompt, "trial": trial})
         self._set_phase("emotion_imagery", category)
 
+    def _update_assr(self, elapsed: float) -> None:
+        cycle = int(elapsed // 30.0)
+        within = elapsed % 30.0
+        if within < 10.0:
+            key = "baseline:安静基线"
+            if key != self._last_phase and self._audio_player is not None:
+                self._audio_player.stop()
+            self._set_phase("baseline", "安静基线", {"cycle": cycle, "target_frequency": 40.0})
+            return
+        key = "stimulation:40 Hz 调幅音"
+        if key != self._last_phase:
+            if self._audio_player is not None:
+                self._audio_player.play_tone(1000.0, 20.0, modulation_hz=40.0)
+            self.trials += 1
+        self._set_phase(
+            "stimulation",
+            "40 Hz 调幅音",
+            {"cycle": cycle, "target_frequency": 40.0, "carrier_frequency": 1000.0},
+        )
+
+    def _update_oddball(self, now: float) -> None:
+        if now < self._next_tone_at:
+            if self.trials == 0:
+                self._set_phase("ready", "准备聆听")
+            return
+        kind = self._oddball_sequence[self._oddball_index % len(self._oddball_sequence)]
+        self._oddball_index += 1
+        frequency = 1500.0 if kind == "deviant" else 1000.0
+        self.current_target = kind == "deviant"
+        self._responded_to_item = False
+        self.trials += 1
+        self.targets += int(self.current_target)
+        if self._audio_player is not None:
+            self._audio_player.play_tone(frequency, 0.1)
+        self._emit(
+            kind,
+            "偏差音" if self.current_target else "标准音",
+            {
+                "trial": self.trials,
+                "tone_frequency": frequency,
+                "target_present": self.current_target,
+                "trials": self.trials,
+                "targets": self.targets,
+                "hits": self.hits,
+                "false_alarms": self._false_alarms,
+                "timing_calibrated": False,
+            },
+        )
+        self._last_phase = f"{kind}:{self.trials}"
+        self._next_tone_at = now + self._rng.uniform(0.75, 0.9)
+
     def _set_phase(self, phase: str, label: str, payload: dict | None = None) -> None:
         key = f"{phase}:{label}"
         if key == self._last_phase:
@@ -262,6 +337,15 @@ class StimulusWindow(QWidget):
             text = self._math_problem if self._last_phase.startswith("mental_math") else "+"
             hint = f"输入答案后回车：{self._typed_answer}" if text != "+" else "放松并注视中央"
             self._paint_center(painter, text, hint, QColor("#020617"))
+        elif self.paradigm == "听觉 ASSR":
+            phase = self._last_phase.partition(":")[0]
+            text = "40 Hz" if phase == "stimulation" else "+"
+            hint = "正在播放调幅音｜保持放松" if phase == "stimulation" else "安静基线｜即将播放声音"
+            self._paint_center(painter, text, hint, QColor("#0f172a"))
+        elif self.paradigm == "听觉 Oddball":
+            hit_rate = self.hits / self.targets if self.targets else 0.0
+            hint = f"听到高音按空格｜试次 {self.trials}｜命中 {hit_rate:.0%}"
+            self._paint_center(painter, "+", hint, QColor("#0f172a"))
         else:
             colors = {"正向": QColor("#14532d"), "负向": QColor("#7f1d1d"), "中性": QColor("#334155")}
             self._paint_center(painter, self._emotion_prompt, f"当前：{self._emotion_category}｜按 1–9 评价感受强度", colors[self._emotion_category])
@@ -351,6 +435,29 @@ class StimulusWindow(QWidget):
                 self._last_problem_at = 0.0
                 self._math_problem = ""
                 self._typed_answer = ""
+        elif self.paradigm == "听觉 Oddball" and event.key() == Qt.Key.Key_Space:
+            if self._responded_to_item or self.trials == 0:
+                return
+            self._responded_to_item = True
+            self.responses += 1
+            if self.current_target:
+                self.hits += 1
+            else:
+                self._false_alarms += 1
+            self._emit(
+                "response",
+                "命中" if self.current_target else "误报",
+                {
+                    "trial": self.trials,
+                    "target_present": self.current_target,
+                    "hit": self.current_target,
+                    "trials": self.trials,
+                    "targets": self.targets,
+                    "hits": self.hits,
+                    "false_alarms": self._false_alarms,
+                    "timing_calibrated": False,
+                },
+            )
         elif self.paradigm == "情绪分类" and event.text() in tuple("123456789"):
             self.responses += 1
             self._emit("rating", event.text(), {"category": self._emotion_category})

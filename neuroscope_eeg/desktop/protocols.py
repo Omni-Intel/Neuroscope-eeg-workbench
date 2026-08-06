@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import random
 from typing import Any
 
 
@@ -16,6 +17,26 @@ def frame_locked_frequencies(refresh_hz: float) -> tuple[float, ...]:
     return tuple(round(refresh / frames, 3) for frames in frames_per_cycle)
 
 
+def generate_oddball_sequence(
+    trials: int,
+    *,
+    deviant_probability: float = 0.2,
+    seed: int = 17,
+) -> tuple[str, ...]:
+    if trials <= 0:
+        raise ValueError("trials must be positive")
+    if not 0.0 < deviant_probability < 0.5:
+        raise ValueError("deviant_probability must be between 0 and 0.5")
+    deviant_count = max(1, int(round(trials * deviant_probability)))
+    if deviant_count * 2 > trials + 1:
+        raise ValueError("too many deviants to keep them non-adjacent")
+
+    rng = random.Random(seed)
+    compressed = sorted(rng.sample(range(trials - deviant_count + 1), deviant_count))
+    deviant_positions = {position + offset for offset, position in enumerate(compressed)}
+    return tuple("deviant" if index in deviant_positions else "standard" for index in range(trials))
+
+
 @dataclass(frozen=True, slots=True)
 class StimulusEvent:
     monotonic_time: float
@@ -29,4 +50,3 @@ class StimulusEvent:
         result = asdict(self)
         result["payload"] = dict(self.payload)
         return result
-

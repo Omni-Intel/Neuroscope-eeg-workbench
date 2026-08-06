@@ -54,4 +54,6 @@ PARADIGMS: dict[str, Paradigm] = {
     "视觉图像识别": Paradigm("visual_awareness", "视觉图像识别"),
     "注意力": Paradigm("attention", "注意力"),
     "情绪分类": Paradigm("emotion", "情绪分类"),
+    "听觉 ASSR": Paradigm("auditory_assr", "听觉 ASSR"),
+    "听觉 Oddball": Paradigm("auditory_oddball", "听觉 Oddball"),
 }

@@ -26,6 +26,7 @@ desktop = [
   "PySide6-Essentials>=6.7,<6.11",
   "pyedflib>=0.1.40,<0.2",
   "pyqtgraph>=0.13.7,<0.15",
+  "sounddevice>=0.5,<0.6",
 ]
 
 [project.scripts]
