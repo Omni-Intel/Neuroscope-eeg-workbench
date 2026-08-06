@@ -37,6 +37,9 @@ neuroscope-desktop = "neuroscope_eeg.desktop.app:main"
 [tool.setuptools.packages.find]
 include = ["neuroscope_eeg*"]
 
+[tool.setuptools.package-data]
+neuroscope_eeg = ["assets/emotion_arousal/*.md", "assets/emotion_arousal/*.json", "assets/emotion_arousal/images/*.jpg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

@@ -79,7 +79,11 @@ def _build_source(
         return build_neuracle_source(oi_mi_path, host, port, sfreq, n_channels)
     if source_label == "强脑 BrainCo":
         return build_brainco_source(oi_mi_path, sfreq, min(n_channels, 32), brainco_addr, brainco_port, brainco_auto)
-    channels = tuple(SimulatedSource().metadata.channel_names[:n_channels])
+    channels = (
+        ("Fp1", "Fp2", "Fpz", "T3", "T4")
+        if n_channels == 5
+        else tuple(SimulatedSource().metadata.channel_names[:n_channels])
+    )
     return SimulatedSource(sfreq=sfreq, channel_names=channels)
 
 

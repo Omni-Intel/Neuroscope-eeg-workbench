@@ -36,11 +36,11 @@ from neuroscope_eeg.acquisition.legacy import build_brainco_source, build_neurac
 from neuroscope_eeg.acquisition.replay import NPZReplaySource
 from neuroscope_eeg.acquisition.simulated import SimulatedSource
 from neuroscope_eeg.analysis.quality import QualityReport, signal_quality
-from neuroscope_eeg.analysis.spectrum import power_spectrum
+from neuroscope_eeg.analysis.spectrum import band_power, power_spectrum
 from neuroscope_eeg.core.models import ConnectionState, EEGEvent
 from neuroscope_eeg.core.session import SessionController
 from neuroscope_eeg.desktop.performance import FpsTracker, fps_level, timer_interval_ms
-from neuroscope_eeg.desktop.protocols import StimulusEvent, frame_locked_frequencies
+from neuroscope_eeg.desktop.protocols import PRESETS, StimulusEvent, frame_locked_frequencies
 from neuroscope_eeg.desktop.audio import AudioUnavailableError
 from neuroscope_eeg.desktop.stimulus import StimulusWindow
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
@@ -69,6 +69,7 @@ class NeuroScopeWindow(QMainWindow):
         self._last_decoder_value = ""
         self._ssvep_checked_trials: set[int] = set()
         self._ssvep_trial_hits = 0
+        self._protocol_reference_metrics: dict[str, float] = {}
         self._wave_layout_key: tuple[tuple[str, ...], float] | None = None
 
         self._build_ui()
@@ -105,6 +106,9 @@ class NeuroScopeWindow(QMainWindow):
         self.paradigm_select = QComboBox()
         self.paradigm_select.addItems(PARADIGMS.keys())
         self.paradigm_select.currentTextChanged.connect(self._paradigm_changed)
+        self.protocol_preset = QComboBox()
+        self.protocol_preset.addItems(PRESETS)
+        self.protocol_preset.currentTextChanged.connect(self._preset_changed)
         self.sfreq = QSpinBox()
         self.sfreq.setRange(1, 5000)
         self.sfreq.setValue(250)
@@ -118,6 +122,7 @@ class NeuroScopeWindow(QMainWindow):
         self.target_fps.currentIndexChanged.connect(self._refresh_rate_changed)
         form.addRow("数据源", self.source_select)
         form.addRow("任务范式", self.paradigm_select)
+        form.addRow("协议预设", self.protocol_preset)
         form.addRow("采样率 Hz", self.sfreq)
         form.addRow("通道数", self.channels)
         form.addRow("画面刷新", self.target_fps)
@@ -176,7 +181,13 @@ class NeuroScopeWindow(QMainWindow):
         self.visual_protocol.setWordWrap(True)
         self.attention_protocol = QLabel("8s 静息 + 30s 连续心算｜输入答案后回车")
         self.attention_protocol.setWordWrap(True)
-        self.emotion_protocol = QLabel("正向 / 负向 / 中性文字情境｜按 1–9 评价强度")
+        self.resting_protocol = QLabel()
+        self.resting_protocol.setWordWrap(True)
+        self.nback_protocol = QLabel()
+        self.nback_protocol.setWordWrap(True)
+        self.stroop_protocol = QLabel()
+        self.stroop_protocol.setWordWrap(True)
+        self.emotion_protocol = QLabel()
         self.emotion_protocol.setWordWrap(True)
         self.assr_protocol = QLabel("10s 安静 + 20s 40 Hz 调幅音｜推荐 T3/T4｜需确认设备带宽")
         self.assr_protocol.setWordWrap(True)
@@ -187,10 +198,14 @@ class NeuroScopeWindow(QMainWindow):
         paradigm_form.addRow("运动想象", self.mi_protocol)
         paradigm_form.addRow("视觉任务", self.visual_protocol)
         paradigm_form.addRow("注意力任务", self.attention_protocol)
-        paradigm_form.addRow("情绪任务", self.emotion_protocol)
+        paradigm_form.addRow("静息任务", self.resting_protocol)
+        paradigm_form.addRow("2-back", self.nback_protocol)
+        paradigm_form.addRow("Stroop", self.stroop_protocol)
+        paradigm_form.addRow("情绪图片", self.emotion_protocol)
         paradigm_form.addRow("听觉 ASSR", self.assr_protocol)
         paradigm_form.addRow("听觉 Oddball", self.oddball_protocol)
         self.paradigm_group = paradigm
+        self._preset_changed()
         layout.addWidget(paradigm)
 
         stimulus = QGroupBox("刺激呈现（软件同步）")
@@ -375,7 +390,10 @@ class NeuroScopeWindow(QMainWindow):
             self.mi_protocol: paradigm == "运动想象",
             self.visual_protocol: paradigm == "视觉图像识别",
             self.attention_protocol: paradigm == "注意力",
-            self.emotion_protocol: paradigm == "情绪分类",
+            self.resting_protocol: paradigm == "静息睁眼/闭眼",
+            self.nback_protocol: paradigm == "2-back 工作记忆",
+            self.stroop_protocol: paradigm == "Stroop 色词冲突",
+            self.emotion_protocol: paradigm == "情绪图片唤醒",
             self.assr_protocol: paradigm == "听觉 ASSR",
             self.oddball_protocol: paradigm == "听觉 Oddball",
         }
@@ -384,6 +402,29 @@ class NeuroScopeWindow(QMainWindow):
         self.assr_marker.setVisible(paradigm == "听觉 ASSR")
         if self.stimulus_window.timer.isActive():
             self._stop_stimulus()
+
+    def _preset_changed(self) -> None:
+        if not hasattr(self, "protocol_preset") or not hasattr(self, "resting_protocol"):
+            return
+        if self.stimulus_window.timer.isActive():
+            self._stop_stimulus()
+        preset = PRESETS[self.protocol_preset.currentText()]
+        self.resting_protocol.setText(
+            f"睁眼 {preset.rest_duration_sec}s + 过渡 5s + 闭眼 {preset.rest_duration_sec}s｜前额 alpha/θ/β"
+        )
+        self.nback_protocol.setText(
+            f"10 个练习 + {preset.nback_trials} 个正式试次｜目标 {preset.nback_targets}｜前额 θ + Fp1/Fp2 偏侧"
+        )
+        self.stroop_protocol.setText(
+            f"12 个练习 + {preset.stroop_trials} 个正式试次｜一致/不一致各半｜θ/β｜ERP 时序待校准"
+        )
+        emotion_total = preset.emotion_per_category * 7
+        self.emotion_protocol.setText(
+            f"自有图片 7 类 × {preset.emotion_per_category} 张 = {emotion_total} 张｜效价/唤醒评分｜Fp1/Fp2 alpha 偏侧"
+        )
+        self.oddball_protocol.setText(
+            f"10 个练习 + {preset.oddball_trials} 个正式声音｜80% 标准音 + 20% 偏差音｜ERP 时序待校准"
+        )
 
     def _populate_displays(self) -> None:
         self.display_select.clear()
@@ -406,19 +447,23 @@ class NeuroScopeWindow(QMainWindow):
             QMessageBox.information(self, "请先启动采集", "请先启动模拟源或真机采集，再开始第二屏刺激。")
             return
         self.stimulus_events.clear()
+        self._protocol_reference_metrics.clear()
         self._ssvep_checked_trials.clear()
         self._ssvep_trial_hits = 0
         screen = self._selected_screen()
         try:
-            self.stimulus_window.start_protocol(self.paradigm_select.currentText(), screen)
-        except AudioUnavailableError as exc:
-            QMessageBox.warning(self, "音频不可用", str(exc))
+            self.stimulus_window.start_protocol(
+                self.paradigm_select.currentText(), screen, self.protocol_preset.currentText()
+            )
+        except (AudioUnavailableError, ValueError) as exc:
+            QMessageBox.warning(self, "范式无法启动", str(exc))
             self.stimulus_status.setText(f"未启动｜{exc}")
             return
         if self.paradigm_select.currentText() == "SSVEP":
             self.ssvep_targets.setText(", ".join(f"{value:g}" for value in self.stimulus_window.ssvep_frequencies))
         self.stimulus_status.setText(
-            f"运行中｜{self.display_select.currentText()}｜软件时间戳同步｜Esc 可退出刺激"
+            f"运行中｜{self.protocol_preset.currentText()}｜{self.display_select.currentText()}｜"
+            "软件时间戳同步｜Esc 可退出刺激"
         )
 
     def _stop_stimulus(self) -> None:
@@ -427,6 +472,8 @@ class NeuroScopeWindow(QMainWindow):
     def _stimulus_stopped(self) -> None:
         summary = self.stimulus_window.summary()
         hit_rate = summary["behavior_hit_rate"]
+        if hit_rate is None and "behavior_accuracy" in summary:
+            hit_rate = summary["behavior_accuracy"]
         hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
         self.stimulus_status.setText(
             f"已停止｜试次 {summary['trials']}｜行为命中率 {hit_rate_text}｜"
@@ -436,6 +483,8 @@ class NeuroScopeWindow(QMainWindow):
     def _on_stimulus_event(self, event: StimulusEvent) -> None:
         if self.controller is not None:
             event.payload.setdefault("eeg_sample_index", self.controller.samples_received)
+            self._capture_protocol_reference(event)
+        event.payload.update(self._protocol_reference_metrics)
         self.stimulus_events.append(event)
         if event.paradigm == "SSVEP" and event.phase == "rest":
             trial = int(event.payload.get("trial", -1))
@@ -443,7 +492,47 @@ class NeuroScopeWindow(QMainWindow):
             if trial >= 0 and trial not in self._ssvep_checked_trials and target is not None:
                 self._ssvep_checked_trials.add(trial)
                 self._ssvep_trial_hits += int(self._last_decoder_value == f"{float(target):g} Hz")
-        self.stimulus_status.setText(f"{event.paradigm}｜{event.phase}｜{event.label}｜软件同步")
+        stage = "练习" if event.payload.get("is_practice") else str(event.payload.get("preset", "正式"))
+        self.stimulus_status.setText(f"{event.paradigm}｜{stage}｜{event.phase}｜{event.label}｜软件同步")
+
+    def _capture_protocol_reference(self, event: StimulusEvent) -> None:
+        if self.controller is None:
+            return
+        duration: float | None = None
+        band_name = "alpha"
+        field_prefix = ""
+        if event.paradigm == "静息睁眼/闭眼" and event.phase == "transition":
+            duration = float(PRESETS[self.protocol_preset.currentText()].rest_duration_sec)
+            field_prefix = "eyes_open"
+        elif event.paradigm == "2-back 工作记忆" and event.phase == "nback_context":
+            if "nback_baseline_theta_db" not in self._protocol_reference_metrics:
+                duration = 10.0
+                band_name = "theta"
+                field_prefix = "nback_baseline"
+        elif event.paradigm == "情绪图片唤醒" and event.phase == "emotion_fixation":
+            if "emotion_baseline_alpha_db" not in self._protocol_reference_metrics:
+                duration = 20.0
+                field_prefix = "emotion_baseline"
+        if duration is None:
+            return
+        snapshot = self.controller.buffer.latest_available(duration)
+        if snapshot is None or snapshot[0].shape[1] < 32:
+            return
+        data = snapshot[0]
+        metadata = self.controller.source.metadata
+        freqs, psd = power_spectrum(data, metadata.sfreq)
+        bands = band_power(freqs, psd)
+        lookup = {name.upper(): index for index, name in enumerate(metadata.channel_names)}
+        selected = [lookup[name] for name in ("FP1", "FP2", "FPZ") if name in lookup]
+        if not selected:
+            return
+        self._protocol_reference_metrics[f"{field_prefix}_{band_name}_db"] = float(
+            np.mean(bands[band_name][selected])
+        )
+        for name in ("FP1", "FP2", "FPZ"):
+            if name in lookup:
+                key = f"{field_prefix}_{name.lower()}_{band_name}_db"
+                self._protocol_reference_metrics[key] = float(bands[band_name][lookup[name]])
 
     def _export_events(self) -> None:
         if not self.stimulus_events:
@@ -513,13 +602,17 @@ class NeuroScopeWindow(QMainWindow):
                 self.brainco_port.value(),
                 self.brainco_auto.isChecked(),
             )
-        names = SimulatedSource().metadata.channel_names[:n_channels]
+        names = (
+            ("Fp1", "Fp2", "Fpz", "T3", "T4")
+            if n_channels == 5
+            else SimulatedSource().metadata.channel_names[:n_channels]
+        )
         return SimulatedSource(sfreq=sfreq, channel_names=names, packet_sec=0.02)
 
     def _start_session(self) -> None:
         self._stop_session()
         try:
-            self.controller = SessionController(self._build_source())
+            self.controller = SessionController(self._build_source(), buffer_sec=180.0)
             self.controller.start()
         except Exception as exc:  # noqa: BLE001
             self.controller = None
@@ -689,7 +782,17 @@ class NeuroScopeWindow(QMainWindow):
                 "运动想象": {"imagery"},
                 "视觉图像识别": {"stimulus", "response"},
                 "注意力": {"mental_math", "problem", "response"},
-                "情绪分类": {"emotion_imagery", "emotion", "rating"},
+                "静息睁眼/闭眼": {"eyes_open", "eyes_closed"},
+                "2-back 工作记忆": {"nback_trial", "response"},
+                "Stroop 色词冲突": {"stroop_stimulus", "stroop_blank", "response"},
+                "情绪图片唤醒": {
+                    "emotion_image",
+                    "valence_rating",
+                    "valence_response",
+                    "arousal_rating",
+                    "arousal_response",
+                    "emotion_trial_complete",
+                },
                 "听觉 ASSR": {"stimulation"},
                 "听觉 Oddball": {"standard", "deviant", "response"},
             }
@@ -745,9 +848,15 @@ class NeuroScopeWindow(QMainWindow):
             ("累计样本", str(self.controller.samples_received)),
             ("数据块", str(self.controller.chunks_received)),
             ("同步方式", "软件时间戳（无硬件 Trigger）"),
+            ("协议预设", str(event.payload.get("preset", "未设置"))),
+            ("时序状态", str(event.payload.get("timing_status", "未设置"))),
             ("刺激阶段", str(event.payload.get("stimulus_phase", "连续观察"))),
             ("刺激标签", str(event.payload.get("stimulus_label", event.code))),
             ("图像类别", str(event.payload.get("image_category", "未设置"))),
+            ("情绪细分类", str(event.payload.get("fine_category_zh", "未设置"))),
+            ("正式试次", str(event.payload.get("trials", 0))),
+            ("行为正确/命中", str(event.payload.get("hits", 0))),
+            ("行为误报", str(event.payload.get("false_alarms", 0))),
             ("目标实际出现", "是" if event.payload.get("target_present") else "否"),
             ("已记录刺激事件", str(len(self.stimulus_events))),
             ("SSVEP 本会话试次匹配率", ssvep_rate),

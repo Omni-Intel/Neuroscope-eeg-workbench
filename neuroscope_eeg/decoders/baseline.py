@@ -184,32 +184,164 @@ class AttentionBaselineDecoder:
 
 
 class EmotionBaselineDecoder:
-    name = "额叶效价 / 唤醒趋势"
+    name = "Fp1/Fp2 alpha 偏侧趋势"
 
     def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
-        left = _indices(metadata.channel_names, ("F3",))
-        right = _indices(metadata.channel_names, ("F4",))
+        left = _indices(metadata.channel_names, ("Fp1",))
+        right = _indices(metadata.channel_names, ("Fp2",))
         if not left or not right:
             return DecoderResult(
                 value="尚未解码",
                 confidence=0.0,
-                detail="效价趋势需要左右额区成对通道。",
-                missing=("F3", "F4"),
+                detail="情绪图片 alpha 偏侧趋势需要 Fp1/Fp2 成对通道。",
+                metrics={"有效数据秒数": data.shape[1] / metadata.sfreq},
+                missing=("Fp1", "Fp2"),
             )
         bands = _band_db(metadata, data)
-        asymmetry = float(np.mean(bands["alpha"][right]) - np.mean(bands["alpha"][left]))
+        left_alpha_db = float(np.mean(bands["alpha"][left]))
+        right_alpha_db = float(np.mean(bands["alpha"][right]))
+        asymmetry = float(np.log(10.0) / 10.0 * (right_alpha_db - left_alpha_db))
         frontal = left + right
         beta_alpha = float(
             np.mean(10 ** (bands["beta"][frontal] / 10.0))
             / max(float(np.mean(10 ** (bands["alpha"][frontal] / 10.0))), 1e-12)
         )
-        valence = "正向倾向" if asymmetry >= 0 else "负向倾向"
-        arousal = "较高唤醒" if beta_alpha >= 0.6 else "较低唤醒"
+        payload = event.payload if event is not None else {}
+        fine_category = str(payload.get("fine_category_zh", payload.get("fine_category", "等待图片")))
+        metrics: dict[str, float | str] = {
+            "Fp1 alpha dB": left_alpha_db,
+            "Fp2 alpha dB": right_alpha_db,
+            "alpha 偏侧 ln(Fp2)-ln(Fp1)": asymmetry,
+            "Fp1/Fp2 beta/alpha": beta_alpha,
+            "当前图片类别": fine_category,
+            "当前粗效价": str(payload.get("valence", "未设置")),
+            "效价评分": str(payload.get("valence_rating", "未评分")),
+            "唤醒评分": str(payload.get("arousal_rating", "未评分")),
+        }
+        if "emotion_baseline_alpha_db" in payload:
+            metrics["图片-基线 alpha dB"] = float(np.mean((left_alpha_db, right_alpha_db))) - float(
+                payload["emotion_baseline_alpha_db"]
+            )
         return DecoderResult(
-            value=f"{valence} · {arousal}",
+            value=f"{fine_category}｜alpha 偏侧 {asymmetry:+.2f}",
             confidence=float(min(0.5, 0.2 + abs(asymmetry) / 12.0)),
-            detail="科研趋势，不用于心理或医疗诊断。",
-            metrics={"额叶 alpha 不对称 dB": asymmetry, "beta/alpha": beta_alpha},
+            detail="公式为 ln(alpha_Fp2)-ln(alpha_Fp1)；只表示会话内伴随趋势，不是七类情绪分类结果。",
+            metrics=metrics,
+        )
+
+
+class RestingStateBaselineDecoder:
+    name = "前额睁闭眼频带趋势"
+
+    def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
+        frontal = _indices(metadata.channel_names, ("Fp1", "Fp2", "Fpz"))
+        if not frontal:
+            return DecoderResult(
+                value="尚未解码",
+                confidence=0.0,
+                detail="前额睁闭眼趋势需要 Fp1/Fp2/Fpz 中至少一个通道。",
+                metrics={"有效数据秒数": data.shape[1] / metadata.sfreq},
+                missing=("Fp1/Fp2/Fpz",),
+            )
+        bands = _band_db(metadata, data)
+        metrics: dict[str, float | str] = {"有效数据秒数": data.shape[1] / metadata.sfreq}
+        for index in frontal:
+            channel = metadata.channel_names[index]
+            metrics[f"{channel} theta dB"] = float(bands["theta"][index])
+            metrics[f"{channel} alpha dB"] = float(bands["alpha"][index])
+            metrics[f"{channel} beta dB"] = float(bands["beta"][index])
+        alpha_db = float(np.mean(bands["alpha"][frontal]))
+        payload = event.payload if event is not None else {}
+        eye_state = str(payload.get("eye_state", "等待阶段"))
+        metrics["当前阶段"] = eye_state
+        metrics["前额 alpha 平均 dB"] = alpha_db
+        if "eyes_open_alpha_db" in payload:
+            open_alpha = float(payload["eyes_open_alpha_db"])
+            metrics["闭眼-睁眼 alpha dB"] = alpha_db - open_alpha
+        return DecoderResult(
+            value=f"{eye_state}｜前额 alpha {alpha_db:.1f} dB",
+            confidence=0.45,
+            detail="展示前额 alpha 的会话内睁闭眼相对趋势；经典闭眼 alpha 通常在枕区更强。",
+            metrics=metrics,
+        )
+
+
+class NBackBaselineDecoder:
+    name = "2-back 前额 theta 与行为"
+
+    def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
+        left = _indices(metadata.channel_names, ("Fp1",))
+        right = _indices(metadata.channel_names, ("Fp2",))
+        center = _indices(metadata.channel_names, ("Fpz",))
+        frontal = left + right + center
+        if not frontal:
+            return DecoderResult(
+                value="尚未解码",
+                confidence=0.0,
+                detail="2-back 前额 theta 趋势需要 Fp1/Fp2/Fpz 中至少一个通道。",
+                metrics={"有效数据秒数": data.shape[1] / metadata.sfreq},
+                missing=("Fp1/Fp2/Fpz",),
+            )
+        bands = _band_db(metadata, data)
+        payload = event.payload if event is not None else {}
+        metrics: dict[str, float | str] = {
+            "前额 theta 平均 dB": float(np.mean(bands["theta"][frontal])),
+            "正式试次": float(payload.get("trials", 0)),
+            "命中": float(payload.get("hits", 0)),
+            "误报": float(payload.get("false_alarms", 0)),
+            "行为命中率": float(payload.get("behavior_hit_rate", 0.0) or 0.0),
+            "d-prime": float(payload.get("d_prime", 0.0) or 0.0),
+            "正确命中中位反应时 ms": float(payload.get("median_response_time_ms", 0.0) or 0.0),
+        }
+        if "nback_baseline_theta_db" in payload:
+            metrics["任务-基线 theta dB"] = float(metrics["前额 theta 平均 dB"]) - float(
+                payload["nback_baseline_theta_db"]
+            )
+        for index in frontal:
+            metrics[f"{metadata.channel_names[index]} theta dB"] = float(bands["theta"][index])
+        if left and right:
+            metrics["Fp1-Fp2 theta 偏侧 dB"] = float(bands["theta"][left[0]] - bands["theta"][right[0]])
+        return DecoderResult(
+            value=f"前额 theta {metrics['前额 theta 平均 dB']:.1f} dB",
+            confidence=0.45,
+            detail="频带功率与行为均为本次会话趋势，不是智力、记忆年龄或临床评分。",
+            metrics=metrics,
+        )
+
+
+class StroopBaselineDecoder:
+    name = "Stroop 前额 theta/beta 与行为"
+
+    def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
+        frontal = _indices(metadata.channel_names, ("Fp1", "Fp2", "Fpz"))
+        if not frontal:
+            return DecoderResult(
+                value="尚未解码",
+                confidence=0.0,
+                detail="Stroop 前额频带趋势需要 Fp1/Fp2/Fpz 中至少一个通道。",
+                metrics={"ERP 状态": "时序待校准"},
+                missing=("Fp1/Fp2/Fpz",),
+            )
+        bands = _band_db(metadata, data)
+        payload = event.payload if event is not None else {}
+        timing_status = str(payload.get("timing_status", "software_sync_uncalibrated"))
+        metrics: dict[str, float | str] = {
+            "前额 theta 平均 dB": float(np.mean(bands["theta"][frontal])),
+            "前额 beta 平均 dB": float(np.mean(bands["beta"][frontal])),
+            "正式试次": float(payload.get("trials", 0)),
+            "总体正确率": float(payload.get("behavior_accuracy", 0.0) or 0.0),
+            "Stroop 反应时干扰 ms": float(payload.get("stroop_interference_ms", 0.0) or 0.0),
+            "一致条件正确率": float(payload.get("congruent_accuracy", 0.0) or 0.0),
+            "不一致条件正确率": float(payload.get("incongruent_accuracy", 0.0) or 0.0),
+            "ERP 状态": "已校准" if timing_status == "calibrated" else "时序待校准",
+        }
+        for index in frontal:
+            metrics[f"{metadata.channel_names[index]} theta dB"] = float(bands["theta"][index])
+        return DecoderResult(
+            value=f"前额 θ/β {metrics['前额 theta 平均 dB']:.1f}/{metrics['前额 beta 平均 dB']:.1f} dB",
+            confidence=0.45,
+            detail="行为与连续频带趋势可立即展示；Fpz N2/N450 试次锁定趋势需完成显示到 EEG 时序校准。",
+            metrics=metrics,
         )
 
 
@@ -269,13 +401,18 @@ class AuditoryOddballBaselineDecoder:
         targets = int(payload.get("targets", 0))
         hits = int(payload.get("hits", 0))
         false_alarms = int(payload.get("false_alarms", 0))
+        non_targets = max(0, trials - targets)
         hit_rate = hits / targets if targets else 0.0
+        false_alarm_rate = false_alarms / non_targets if non_targets else 0.0
+        timing_status = str(payload.get("timing_status", "software_sync_uncalibrated"))
         metrics: dict[str, float | str] = {
             "已呈现试次": float(trials),
             "偏差音数量": float(targets),
             "行为命中率": float(hit_rate),
             "误报": float(false_alarms),
-            "同步状态": "待真机校准",
+            "误报率": float(false_alarm_rate),
+            "正确命中中位反应时 ms": float(payload.get("median_response_time_ms", 0.0) or 0.0),
+            "同步状态": "已校准" if timing_status == "calibrated" else "待真机校准",
         }
         missing_items: list[str] = []
         if not _indices(metadata.channel_names, ("Fpz",)):
@@ -287,7 +424,7 @@ class AuditoryOddballBaselineDecoder:
         return DecoderResult(
             value="ERP 时序待校准",
             confidence=0.0,
-            detail="设备不支持事件标记；声音事件已记录，需完成设备时间戳映射和音频延迟校准后再输出 ERP。",
+            detail="设备不支持事件标记；声音事件已记录，需完成设备时间戳映射和音频延迟校准后再输出 N1/MMN/晚期正波趋势。",
             metrics=metrics,
             missing=tuple(missing_items),
         )
@@ -298,7 +435,11 @@ BASELINE_DECODERS: Mapping[str, object] = {
     "运动想象": MotorImageryBaselineDecoder(),
     "视觉图像识别": VisualBaselineDecoder(),
     "注意力": AttentionBaselineDecoder(),
+    "静息睁眼/闭眼": RestingStateBaselineDecoder(),
+    "2-back 工作记忆": NBackBaselineDecoder(),
+    "Stroop 色词冲突": StroopBaselineDecoder(),
     "情绪分类": EmotionBaselineDecoder(),
+    "情绪图片唤醒": EmotionBaselineDecoder(),
     "听觉 ASSR": AuditoryASSRBaselineDecoder(),
     "听觉 Oddball": AuditoryOddballBaselineDecoder(),
 }

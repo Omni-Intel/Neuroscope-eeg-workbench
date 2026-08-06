@@ -1,0 +1,842 @@
+[
+  {
+    "id": "img_001",
+    "file": "Amu-01.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_002",
+    "file": "Amu-02.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_003",
+    "file": "Amu-03.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_004",
+    "file": "Amu-04.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_005",
+    "file": "Amu-05.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_006",
+    "file": "Amu-06.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_007",
+    "file": "Amu-07.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_008",
+    "file": "Amu-08.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_009",
+    "file": "Amu-09.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_010",
+    "file": "Amu-10.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_011",
+    "file": "Amu-11.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_012",
+    "file": "Amu-12.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_013",
+    "file": "Amu-13.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_014",
+    "file": "Amu-14.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_015",
+    "file": "Amu-15.jpg",
+    "fine_category": "amusement",
+    "fine_category_zh": "愉悦",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_016",
+    "file": "Dis-01.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_017",
+    "file": "Dis-02.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_018",
+    "file": "Dis-03.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_019",
+    "file": "Dis-04.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_020",
+    "file": "Dis-05.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_021",
+    "file": "Dis-06.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_022",
+    "file": "Dis-07.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_023",
+    "file": "Dis-08.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_024",
+    "file": "Dis-09.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_025",
+    "file": "Dis-10.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_026",
+    "file": "Dis-11.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_027",
+    "file": "Dis-12.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_028",
+    "file": "Dis-13.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_029",
+    "file": "Dis-14.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_030",
+    "file": "Dis-15.jpg",
+    "fine_category": "disgust",
+    "fine_category_zh": "厌恶",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_031",
+    "file": "Fea-01.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_032",
+    "file": "Fea-02.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_033",
+    "file": "Fea-03.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_034",
+    "file": "Fea-04.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_035",
+    "file": "Fea-05.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_036",
+    "file": "Fea-06.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_037",
+    "file": "Fea-07.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_038",
+    "file": "Fea-08.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_039",
+    "file": "Fea-09.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_040",
+    "file": "Fea-10.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_041",
+    "file": "Fea-11.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_042",
+    "file": "Fea-12.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_043",
+    "file": "Fea-13.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_044",
+    "file": "Fea-14.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_045",
+    "file": "Fea-15.jpg",
+    "fine_category": "fear",
+    "fine_category_zh": "恐惧",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_046",
+    "file": "Ins-01.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_047",
+    "file": "Ins-02.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_048",
+    "file": "Ins-03.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_049",
+    "file": "Ins-04.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_050",
+    "file": "Ins-05.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_051",
+    "file": "Ins-06.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_052",
+    "file": "Ins-07.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_053",
+    "file": "Ins-08.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_054",
+    "file": "Ins-09.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_055",
+    "file": "Ins-10.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_056",
+    "file": "Ins-11.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_057",
+    "file": "Ins-12.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_058",
+    "file": "Ins-13.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_059",
+    "file": "Ins-14.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_060",
+    "file": "Ins-15.jpg",
+    "fine_category": "inspiration",
+    "fine_category_zh": "鼓舞",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_061",
+    "file": "Neu-01.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_062",
+    "file": "Neu-02.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_063",
+    "file": "Neu-03.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_064",
+    "file": "Neu-04.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_065",
+    "file": "Neu-05.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_066",
+    "file": "Neu-06.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_067",
+    "file": "Neu-07.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_068",
+    "file": "Neu-08.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_069",
+    "file": "Neu-09.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_070",
+    "file": "Neu-10.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_071",
+    "file": "Neu-11.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_072",
+    "file": "Neu-12.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_073",
+    "file": "Neu-13.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_074",
+    "file": "Neu-14.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_075",
+    "file": "Neu-15.jpg",
+    "fine_category": "neutral",
+    "fine_category_zh": "中性",
+    "valence": "neutral",
+    "split": "train"
+  },
+  {
+    "id": "img_076",
+    "file": "Sad-01.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_077",
+    "file": "Sad-02.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_078",
+    "file": "Sad-03.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_079",
+    "file": "Sad-04.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_080",
+    "file": "Sad-05.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_081",
+    "file": "Sad-06.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_082",
+    "file": "Sad-07.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_083",
+    "file": "Sad-08.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_084",
+    "file": "Sad-09.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_085",
+    "file": "Sad-10.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_086",
+    "file": "Sad-11.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_087",
+    "file": "Sad-12.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_088",
+    "file": "Sad-13.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_089",
+    "file": "Sad-14.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_090",
+    "file": "Sad-15.jpg",
+    "fine_category": "sadness",
+    "fine_category_zh": "悲伤",
+    "valence": "negative",
+    "split": "train"
+  },
+  {
+    "id": "img_091",
+    "file": "Ten-01.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_092",
+    "file": "Ten-02.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_093",
+    "file": "Ten-03.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_094",
+    "file": "Ten-04.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_095",
+    "file": "Ten-05.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_096",
+    "file": "Ten-06.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_097",
+    "file": "Ten-07.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_098",
+    "file": "Ten-08.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_099",
+    "file": "Ten-09.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_100",
+    "file": "Ten-10.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_101",
+    "file": "Ten-11.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_102",
+    "file": "Ten-12.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_103",
+    "file": "Ten-13.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_104",
+    "file": "Ten-14.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  },
+  {
+    "id": "img_105",
+    "file": "Ten-15.jpg",
+    "fine_category": "tenderness",
+    "fine_category_zh": "温情",
+    "valence": "positive",
+    "split": "train"
+  }
+]
