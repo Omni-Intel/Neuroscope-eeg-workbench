@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 from enum import Enum
 from types import SimpleNamespace
