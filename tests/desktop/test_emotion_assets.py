@@ -34,3 +34,6 @@ def test_full_emotion_selection_uses_all_fifteen_per_category() -> None:
         len({image.fine_category for image in selected[index : index + 3]}) > 1
         for index in range(len(selected) - 2)
     )
+    for start in (0, 35, 70):
+        block = selected[start : start + 35]
+        assert all(sum(image.fine_category == category for image in block) == 5 for category in EMOTION_CATEGORIES)

@@ -14,15 +14,17 @@ from neuroscope_eeg.desktop.emotion_assets import EmotionImage, load_emotion_man
 from neuroscope_eeg.desktop.protocols import (
     PRESETS,
     PROTOCOL_VERSION,
-    STROOP_KEY_MAP,
+    STROOP_RESPONSE_KEYS,
     TIMING_STATUS,
     NBackTrial,
     ProtocolPreset,
     StimulusEvent,
     StroopTrial,
+    balanced_accuracy,
     frame_locked_frequencies,
     generate_nback_trials,
     generate_oddball_sequence,
+    generate_oddball_soa,
     generate_stroop_trials,
     signal_detection_metrics,
 )
@@ -68,12 +70,11 @@ class StimulusWindow(QWidget):
         self._emotion_pixmap = QPixmap()
         self._emotion_phase = "warning"
         self._emotion_phase_started_at = 0.0
-        self._emotion_valence_rating: int | None = None
-        self._emotion_arousal_rating: int | None = None
         self._emotion_warning_confirmed = False
         self._ssvep_target_index = 0
         self._audio_player = audio_player
         self._oddball_sequence = generate_oddball_sequence(1000)
+        self._oddball_soa = generate_oddball_soa(1000)
         self._oddball_index = 0
         self._next_tone_at = 0.0
         self._false_alarms = 0
@@ -84,6 +85,10 @@ class StimulusWindow(QWidget):
         self._nback_formal: tuple[NBackTrial, ...] = ()
         self._nback_items: tuple[tuple[str, NBackTrial | None, bool], ...] = ()
         self._nback_item_index = -1
+        self._nback_condition_trials = {"target": 0, "non_target": 0}
+        self._nback_condition_correct = {"target": 0, "non_target": 0}
+        self._nback_condition_rts: dict[str, list[float]] = {"target": [], "non_target": []}
+        self._nback_omissions = 0
         self._stroop_practice: tuple[StroopTrial, ...] = ()
         self._stroop_formal: tuple[StroopTrial, ...] = ()
         self._stroop_item_index = -1
@@ -185,6 +190,10 @@ class StimulusWindow(QWidget):
             )
             self._nback_items = self._build_nback_items()
             self._nback_item_index = -1
+            self._nback_condition_trials = {"target": 0, "non_target": 0}
+            self._nback_condition_correct = {"target": 0, "non_target": 0}
+            self._nback_condition_rts = {"target": [], "non_target": []}
+            self._nback_omissions = 0
         elif self.paradigm == "Stroop 色词冲突":
             self._stroop_practice = generate_stroop_trials(12, seed=11)
             self._stroop_formal = generate_stroop_trials(self.preset.stroop_trials, seed=17)
@@ -196,6 +205,7 @@ class StimulusWindow(QWidget):
             practice = generate_oddball_sequence(10, seed=11)
             formal = generate_oddball_sequence(self.preset.oddball_trials, seed=17)
             self._oddball_sequence = practice + formal
+            self._oddball_soa = generate_oddball_soa(len(self._oddball_sequence), seed=17)
         elif self.paradigm == "情绪图片唤醒":
             manifest = load_emotion_manifest()
             self._emotion_images = select_emotion_images(
@@ -207,8 +217,6 @@ class StimulusWindow(QWidget):
             self._emotion_phase = "warning"
             self._emotion_phase_started_at = self.started_at
             self._emotion_warning_confirmed = False
-            self._emotion_valence_rating = None
-            self._emotion_arousal_rating = None
 
     def _build_nback_items(self) -> tuple[tuple[str, NBackTrial | None, bool], ...]:
         items: list[tuple[str, NBackTrial | None, bool]] = []
@@ -251,9 +259,39 @@ class StimulusWindow(QWidget):
                     false_alarms=self._false_alarms,
                 )
             )
+        if self.paradigm == "2-back 工作记忆":
+            result.update(self._nback_summary())
+        if self.paradigm == "听觉 Oddball":
+            result["misses"] = max(0, self.targets - self.hits)
+            result["miss_rate"] = (
+                max(0, self.targets - self.hits) / self.targets if self.targets else 0.0
+            )
         if self.paradigm == "Stroop 色词冲突":
             result.update(self._stroop_summary())
         return result
+
+    def _nback_summary(self) -> dict[str, float | int | None]:
+        target_trials = self._nback_condition_trials["target"]
+        non_target_trials = self._nback_condition_trials["non_target"]
+        target_correct = self._nback_condition_correct["target"]
+        non_target_correct = self._nback_condition_correct["non_target"]
+        target_rts = self._nback_condition_rts["target"]
+        non_target_rts = self._nback_condition_rts["non_target"]
+        total_correct = target_correct + non_target_correct
+        return {
+            "behavior_accuracy": total_correct / self.trials if self.trials else 0.0,
+            "balanced_accuracy": balanced_accuracy(
+                first_correct=target_correct,
+                first_total=target_trials,
+                second_correct=non_target_correct,
+                second_total=non_target_trials,
+            ),
+            "match_accuracy": target_correct / target_trials if target_trials else 0.0,
+            "nonmatch_accuracy": non_target_correct / non_target_trials if non_target_trials else 0.0,
+            "match_median_response_time_ms": median(target_rts) if target_rts else None,
+            "nonmatch_median_response_time_ms": median(non_target_rts) if non_target_rts else None,
+            "omissions": self._nback_omissions,
+        }
 
     def _stroop_summary(self) -> dict[str, float | int | None]:
         total_correct = sum(self._stroop_condition_correct.values())
@@ -261,14 +299,20 @@ class StimulusWindow(QWidget):
         incongruent_rts = self._stroop_condition_rts["incongruent"]
         congruent_trials = self._stroop_condition_trials["congruent"]
         incongruent_trials = self._stroop_condition_trials["incongruent"]
+        congruent_accuracy = (
+            self._stroop_condition_correct["congruent"] / congruent_trials if congruent_trials else 0.0
+        )
+        incongruent_accuracy = (
+            self._stroop_condition_correct["incongruent"] / incongruent_trials if incongruent_trials else 0.0
+        )
         return {
             "behavior_accuracy": total_correct / self.trials if self.trials else 0.0,
-            "congruent_accuracy": self._stroop_condition_correct["congruent"] / congruent_trials
-            if congruent_trials
-            else 0.0,
-            "incongruent_accuracy": self._stroop_condition_correct["incongruent"] / incongruent_trials
-            if incongruent_trials
-            else 0.0,
+            "balanced_accuracy": (congruent_accuracy + incongruent_accuracy) / 2.0,
+            "congruent_accuracy": congruent_accuracy,
+            "incongruent_accuracy": incongruent_accuracy,
+            "stroop_accuracy_cost": congruent_accuracy - incongruent_accuracy,
+            "congruent_median_response_time_ms": median(congruent_rts) if congruent_rts else None,
+            "incongruent_median_response_time_ms": median(incongruent_rts) if incongruent_rts else None,
             "stroop_interference_ms": median(incongruent_rts) - median(congruent_rts)
             if congruent_rts and incongruent_rts
             else 0.0,
@@ -407,27 +451,36 @@ class StimulusWindow(QWidget):
         if elapsed < 3.0:
             self._set_phase("countdown", f"{max(1, 3 - int(elapsed))}", {"eye_state": "准备"})
             return
-        if elapsed < 3.0 + duration:
-            if not self._last_phase.startswith("eyes_open"):
-                self.trials = 1
-            self._set_phase(
-                "eyes_open",
-                "睁眼注视",
-                {"eye_state": "睁眼", "planned_duration_s": duration, "formal_trial_index": 0},
-            )
-            return
-        if elapsed < 8.0 + duration:
-            self._set_phase("transition", "即将闭眼", {"eye_state": "过渡"})
-            return
-        if elapsed < 8.0 + 2.0 * duration:
-            if not self._last_phase.startswith("eyes_closed"):
-                self.trials = 2
-            self._set_phase(
-                "eyes_closed",
-                "闭眼放松",
-                {"eye_state": "闭眼", "planned_duration_s": duration, "formal_trial_index": 1},
-            )
-            return
+        offset = elapsed - 3.0
+        stage_count = self.preset.rest_repetitions * 2
+        for stage_index in range(stage_count):
+            eye_state = "睁眼" if stage_index % 2 == 0 else "闭眼"
+            phase = "eyes_open" if eye_state == "睁眼" else "eyes_closed"
+            label = "睁眼注视" if eye_state == "睁眼" else "闭眼放松"
+            if offset < duration:
+                self.trials = max(self.trials, stage_index + 1)
+                self._set_phase(
+                    phase,
+                    label,
+                    {
+                        "eye_state": eye_state,
+                        "planned_duration_s": duration,
+                        "formal_trial_index": stage_index,
+                        "repetition": stage_index // 2 + 1,
+                    },
+                )
+                return
+            offset -= duration
+            if stage_index < stage_count - 1:
+                next_state = "闭眼" if eye_state == "睁眼" else "睁眼"
+                if offset < 10.0:
+                    self._set_phase(
+                        "transition",
+                        f"即将{next_state}",
+                        {"eye_state": "过渡", "planned_duration_s": 10.0},
+                    )
+                    return
+                offset -= 10.0
         self.stop_protocol()
 
     def _update_nback(self, elapsed: float, now: float) -> None:
@@ -438,56 +491,91 @@ class StimulusWindow(QWidget):
                 {"is_practice": True, "planned_duration_s": 10.0, "formal_trial_index": -1},
             )
             return
-        item_index = int((elapsed - 10.0) // 2.0)
+        schedule_elapsed = elapsed - 10.0
+        item_index = 0
+        while item_index < len(self._nback_items):
+            item_duration = self._nback_item_duration(item_index)
+            if schedule_elapsed < item_duration:
+                break
+            schedule_elapsed -= item_duration
+            item_index += 1
         if item_index >= len(self._nback_items):
+            self._finalize_nback_trial()
             self.stop_protocol()
             return
-        if item_index == self._nback_item_index:
-            return
-        self._nback_item_index = item_index
+        if item_index != self._nback_item_index:
+            self._finalize_nback_trial()
+            self._nback_item_index = item_index
+            symbol, trial, practice = self._nback_items[item_index]
+            self.current_symbol = symbol
+            self.current_target = bool(trial and trial.is_target)
+            self._responded_to_item = False
+            self._current_started_at = now
+            self._feedback_text = ""
+            if symbol == "正式开始":
+                self._current_payload = {"is_practice": False, "formal_trial_index": -1}
+            elif trial is None:
+                self._current_payload = {
+                    "symbol": symbol,
+                    "is_practice": practice,
+                    "condition": "context",
+                    "formal_trial_index": -1,
+                }
+            else:
+                condition = "target" if trial.is_target else "non_target"
+                if not practice:
+                    self.trials += 1
+                    self.targets += int(trial.is_target)
+                    self._nback_condition_trials[condition] += 1
+                self._current_payload = {
+                    "trial_index": trial.trial_index,
+                    "formal_trial_index": trial.trial_index if not practice else -1,
+                    "is_practice": practice,
+                    "symbol": trial.symbol,
+                    "two_back_symbol": trial.two_back_symbol,
+                    "is_target": trial.is_target,
+                    "target_present": trial.is_target,
+                    "condition": condition,
+                    "correct_response": "J" if trial.is_target else "F",
+                }
+                self._emit("nback_trial", trial.symbol, self._current_payload)
         symbol, trial, practice = self._nback_items[item_index]
-        self.current_symbol = symbol
-        self.current_target = bool(trial and trial.is_target)
-        self._responded_to_item = False
-        self._current_started_at = now
-        self._feedback_text = ""
         if symbol == "正式开始":
-            self._current_payload = {"is_practice": False, "formal_trial_index": -1}
             self._set_phase("formal_ready", "正式试次即将开始", self._current_payload)
+        elif trial is None:
+            if schedule_elapsed < 0.5:
+                self._set_phase("nback_context", symbol, self._current_payload)
+            else:
+                self._set_phase("nback_blank", "", self._current_payload)
+        elif practice and schedule_elapsed >= 2.0:
+            self._finalize_nback_trial()
+            self._set_phase("nback_feedback", self._feedback_text, self._current_payload)
+        elif schedule_elapsed < 0.5:
+            self._set_phase("nback_stimulus", trial.symbol, self._current_payload)
+        else:
+            self._set_phase("nback_blank", "", self._current_payload)
+
+    def _nback_item_duration(self, item_index: int) -> float:
+        _symbol, trial, practice = self._nback_items[item_index]
+        return 2.4 if trial is not None and practice else 2.0
+
+    def _finalize_nback_trial(self) -> None:
+        if self._responded_to_item or "is_target" not in self._current_payload:
             return
-        if trial is None:
-            self._current_payload = {
-                "symbol": symbol,
-                "is_practice": practice,
-                "condition": "context",
-                "formal_trial_index": -1,
-            }
-            self._emit("nback_context", symbol, self._current_payload)
-            self._last_phase = f"nback_context:{item_index}"
-            return
-        if not practice:
-            self.trials += 1
-            self.targets += int(trial.is_target)
-        self._current_payload = {
-            "trial_index": trial.trial_index,
-            "formal_trial_index": trial.trial_index if not practice else -1,
-            "is_practice": practice,
-            "symbol": trial.symbol,
-            "two_back_symbol": trial.two_back_symbol,
-            "is_target": trial.is_target,
-            "target_present": trial.is_target,
-            "condition": "target" if trial.is_target else "non_target",
-            "correct_response": "Space" if trial.is_target else "None",
-        }
-        self._emit("nback_trial", trial.symbol, self._current_payload)
-        self._last_phase = f"nback_trial:{item_index}"
+        self._responded_to_item = True
+        practice = bool(self._current_payload.get("is_practice", False))
+        if practice:
+            self._feedback_text = "未作答"
+        else:
+            self._nback_omissions += 1
+        self._emit("omission", "未作答", {**self._current_payload, "is_correct": False})
 
     def _update_stroop(self, elapsed: float, now: float) -> None:
-        practice_duration = len(self._stroop_practice) * 1.5
+        practice_duration = len(self._stroop_practice) * 1.9
         if elapsed < practice_duration:
             practice = True
-            trial_index = int(elapsed // 1.5)
-            within = elapsed % 1.5
+            trial_index = int(elapsed // 1.9)
+            within = elapsed % 1.9
             trial = self._stroop_practice[trial_index]
         elif elapsed < practice_duration + 2.0:
             self.current_symbol = "正式开始"
@@ -499,11 +587,13 @@ class StimulusWindow(QWidget):
             trial_index = int(formal_elapsed // 1.5)
             within = formal_elapsed % 1.5
             if trial_index >= len(self._stroop_formal):
+                self._finalize_stroop_trial()
                 self.stop_protocol()
                 return
             trial = self._stroop_formal[trial_index]
         global_index = trial_index if practice else len(self._stroop_practice) + trial_index
         if global_index != self._stroop_item_index:
+            self._finalize_stroop_trial()
             self._start_stroop_trial(trial, practice, now)
             self._stroop_item_index = global_index
         if within < 0.3:
@@ -512,8 +602,11 @@ class StimulusWindow(QWidget):
             if not self._last_phase.startswith("stroop_stimulus"):
                 self._current_started_at = now
             self._set_phase("stroop_stimulus", trial.word, self._current_payload)
-        else:
+        elif within < 1.5:
             self._set_phase("stroop_blank", "", self._current_payload)
+        else:
+            self._finalize_stroop_trial()
+            self._set_phase("stroop_feedback", self._feedback_text, self._current_payload)
 
     def _start_stroop_trial(self, trial: StroopTrial, practice: bool, now: float) -> None:
         self.current_symbol = trial.word
@@ -534,6 +627,15 @@ class StimulusWindow(QWidget):
             "correct_response": trial.correct_key,
         }
 
+    def _finalize_stroop_trial(self) -> None:
+        if self._responded_to_item or "congruency" not in self._current_payload:
+            return
+        self._responded_to_item = True
+        practice = bool(self._current_payload.get("is_practice", False))
+        if practice:
+            self._feedback_text = "未作答"
+        self._emit("omission", "未作答", {**self._current_payload, "is_correct": False})
+
     def _update_emotion_images(self, now: float) -> None:
         if self._emotion_phase == "warning":
             self._set_phase("emotion_warning", "内容提示｜按 Enter 继续")
@@ -550,19 +652,17 @@ class StimulusWindow(QWidget):
             self._emotion_phase_started_at = now
             self._emit("emotion_image", self._emotion_image.fine_category_zh, self._emotion_payload())
         elif self._emotion_phase == "image" and elapsed >= 6.0:
-            self._emotion_phase = "valence_rating"
-            self._emotion_phase_started_at = now
-            self._emit("valence_rating", "请评价效价 1–9", self._emotion_payload())
-        elif self._emotion_phase == "valence_rating" and elapsed >= 10.0:
-            self._emotion_phase = "arousal_rating"
-            self._emotion_phase_started_at = now
-            self._emit("arousal_rating", "请评价唤醒 1–9", self._emotion_payload())
-        elif self._emotion_phase == "arousal_rating" and elapsed >= 10.0:
             self._emotion_phase = "blank"
             self._emotion_phase_started_at = now
-            self._emit("emotion_trial_complete", "评分缺失", self._emotion_payload())
-        elif self._emotion_phase == "blank" and elapsed >= 0.5:
-            self._start_next_emotion_trial(now)
+            self._emit("emotion_trial_complete", "图片呈现完成", self._emotion_payload())
+        elif self._emotion_phase == "blank" and elapsed >= 1.0:
+            completed = self._emotion_index + 1
+            if len(self._emotion_images) == 105 and completed in (35, 70):
+                self._emotion_phase = "break"
+                self._emotion_phase_started_at = now
+                self._emit("emotion_break", f"已完成 {completed}/105", {"completed_trials": completed})
+            else:
+                self._start_next_emotion_trial(now)
         elif self._emotion_phase == "debrief" and elapsed >= 5.0:
             self.stop_protocol()
 
@@ -577,8 +677,6 @@ class StimulusWindow(QWidget):
         self._emotion_pixmap = QPixmap(str(self._emotion_image.path))
         if self._emotion_pixmap.isNull():
             raise ValueError(f"无法加载情绪图片：{self._emotion_image.path}")
-        self._emotion_valence_rating = None
-        self._emotion_arousal_rating = None
         self._emotion_phase = "fixation"
         self._emotion_phase_started_at = now
         self.trials += 1
@@ -595,14 +693,15 @@ class StimulusWindow(QWidget):
             "fine_category": self._emotion_image.fine_category,
             "fine_category_zh": self._emotion_image.fine_category_zh,
             "valence": self._emotion_image.valence,
-            "valence_rating": self._emotion_valence_rating,
-            "arousal_rating": self._emotion_arousal_rating,
             "was_skipped": False,
             "condition": self._emotion_image.fine_category,
         }
 
     def _update_assr(self, elapsed: float) -> None:
         cycle = int(elapsed // 30.0)
+        if cycle >= self.preset.assr_cycles:
+            self.stop_protocol()
+            return
         within = elapsed % 30.0
         if within < 10.0:
             key = "baseline:安静基线"
@@ -618,7 +717,12 @@ class StimulusWindow(QWidget):
         self._set_phase(
             "stimulation",
             "40 Hz 调幅音",
-            {"cycle": cycle, "target_frequency": 40.0, "carrier_frequency": 1000.0},
+            {
+                "cycle": cycle,
+                "target_frequency": 40.0,
+                "carrier_frequency": 1000.0,
+                "modulation_depth": 1.0,
+            },
         )
 
     def _update_oddball(self, now: float) -> None:
@@ -642,7 +746,7 @@ class StimulusWindow(QWidget):
             self.targets += int(self.current_target)
         if self._audio_player is not None:
             self._audio_player.play_tone(frequency, 0.1)
-        soa = self._rng.uniform(0.75, 0.9)
+        soa = self._oddball_soa[sequence_index]
         self._current_started_at = now
         self._current_payload = {
             "trial_index": sequence_index,
@@ -653,7 +757,7 @@ class StimulusWindow(QWidget):
             "tone_frequency": frequency,
             "soa_ms": soa * 1000.0,
             "condition": kind,
-            "correct_response": "Space" if self.current_target else "None",
+            "correct_response": "J" if self.current_target else "None",
             "target_present": self.current_target,
         }
         self._emit(
@@ -713,7 +817,7 @@ class StimulusWindow(QWidget):
         elif self.paradigm == "听觉 Oddball":
             hit_rate = self.hits / self.targets if self.targets else 0.0
             stage = "练习" if self._oddball_index <= 10 else self.preset_label
-            hint = f"听到高音按空格｜{stage}｜正式试次 {self.trials}/{self.preset.oddball_trials}｜命中 {hit_rate:.0%}"
+            hint = f"听到高音按 J｜{stage}｜正式试次 {self.trials}/{self.preset.oddball_trials}｜命中 {hit_rate:.0%}"
             if self._feedback_text:
                 hint += f"｜{self._feedback_text}"
             self._paint_center(painter, "+", hint, QColor("#0f172a"))
@@ -722,7 +826,8 @@ class StimulusWindow(QWidget):
             if phase == "eyes_closed":
                 text, hint = "请闭眼", f"保持放松｜{self.preset.rest_duration_sec} 秒阶段"
             elif phase == "transition":
-                text, hint = "即将闭眼", "调整坐姿，听到/看到提示后轻轻闭眼"
+                text = self._last_phase.partition(":")[2] or "状态切换"
+                hint = "10 秒过渡｜调整坐姿并准备切换眼睛状态"
             elif phase == "eyes_open":
                 text, hint = "+", f"睁眼注视中央｜{self.preset.rest_duration_sec} 秒阶段"
             else:
@@ -730,13 +835,18 @@ class StimulusWindow(QWidget):
             self._paint_center(painter, text, hint, QColor("#0f172a"))
         elif self.paradigm == "2-back 工作记忆":
             phase = self._last_phase.partition(":")[0]
-            text = "+" if phase == "nback_baseline" else self.current_symbol
+            if phase == "nback_baseline":
+                text = "+"
+            elif phase in {"nback_blank", "nback_feedback"}:
+                text = ""
+            else:
+                text = self.current_symbol
             hint = (
                 "静息基线｜保持注视"
                 if phase == "nback_baseline"
-                else f"与前两个数字相同就按空格｜正式试次 {self.trials}/{self.preset.nback_trials}"
+                else f"一致按 J，不一致按 F｜正式试次 {self.trials}/{self.preset.nback_trials}"
             )
-            if self._feedback_text:
+            if phase == "nback_feedback" and self._feedback_text:
                 hint += f"｜{self._feedback_text}"
             self._paint_center(painter, text, hint, QColor("#0f172a"))
         elif self.paradigm == "Stroop 色词冲突":
@@ -792,17 +902,20 @@ class StimulusWindow(QWidget):
 
     def _paint_stroop(self, painter: QPainter) -> None:
         phase = self._last_phase.partition(":")[0]
-        if phase in {"stroop_fixation", "stroop_blank"}:
+        if phase in {"stroop_fixation", "stroop_blank", "stroop_feedback"}:
             text = "+" if phase == "stroop_fixation" else ""
+            hint = f"一致按 J，不一致按 F｜正式试次 {self.trials}/{self.preset.stroop_trials}"
+            if phase == "stroop_feedback" and self._feedback_text:
+                hint += f"｜{self._feedback_text}"
             self._paint_center(
                 painter,
                 text,
-                f"D=红　F=绿　J=蓝　K=黄｜正式试次 {self.trials}/{self.preset.stroop_trials}",
+                hint,
                 QColor("#0f172a"),
             )
             return
         if phase == "formal_ready":
-            self._paint_center(painter, "正式开始", "按字体颜色作答，不按文字含义", QColor("#0f172a"))
+            self._paint_center(painter, "正式开始", "文字与字体颜色一致按 J，不一致按 F", QColor("#0f172a"))
             return
         color_map = {"红": QColor("#ef4444"), "绿": QColor("#22c55e"), "蓝": QColor("#3b82f6"), "黄": QColor("#facc15")}
         painter.fillRect(self.rect(), QColor("#0f172a"))
@@ -811,8 +924,8 @@ class StimulusWindow(QWidget):
         painter.drawText(self.rect().adjusted(80, 80, -80, -160), Qt.AlignmentFlag.AlignCenter, self.current_symbol)
         painter.setPen(QColor("#cbd5e1"))
         painter.setFont(QFont("Microsoft YaHei UI", 18))
-        hint = f"D=红　F=绿　J=蓝　K=黄｜正式试次 {self.trials}/{self.preset.stroop_trials}"
-        if self._feedback_text:
+        hint = f"一致按 J，不一致按 F｜正式试次 {self.trials}/{self.preset.stroop_trials}"
+        if phase == "stroop_feedback" and self._feedback_text:
             hint += f"｜{self._feedback_text}"
         painter.drawText(self.rect().adjusted(80, self.height() - 150, -80, -50), Qt.AlignmentFlag.AlignCenter, hint)
 
@@ -853,21 +966,9 @@ class StimulusWindow(QWidget):
                 f"图片 {self.trials}/{len(self._emotion_images)}｜S 跳过｜Esc 退出",
             )
             return
-        if self._emotion_phase == "valence_rating":
-            self._paint_center(
-                painter,
-                "请按 1–9 评价效价",
-                "1=非常负面　5=中性　9=非常正面",
-                QColor("#0f172a"),
-            )
-            return
-        if self._emotion_phase == "arousal_rating":
-            self._paint_center(
-                painter,
-                "请按 1–9 评价唤醒",
-                "1=非常平静　9=非常激动",
-                QColor("#0f172a"),
-            )
+        if self._emotion_phase == "break":
+            completed = self._emotion_index + 1
+            self._paint_center(painter, "休息", f"已完成 {completed}/105｜准备好后按 Enter 继续", QColor("#0f172a"))
             return
         if self._emotion_phase == "debrief":
             self._paint_center(painter, "任务结束", "请休息并确认当前状态｜窗口将自动关闭", QColor("#14532d"))
@@ -916,11 +1017,11 @@ class StimulusWindow(QWidget):
                 self._last_problem_at = 0.0
                 self._math_problem = ""
                 self._typed_answer = ""
-        elif self.paradigm == "2-back 工作记忆" and event.key() == Qt.Key.Key_Space:
-            self._handle_nback_response()
-        elif self.paradigm == "Stroop 色词冲突" and event.text().upper() in set(STROOP_KEY_MAP.values()):
+        elif self.paradigm == "2-back 工作记忆" and event.text().upper() in {"J", "F"}:
+            self._handle_nback_response(event.text().upper())
+        elif self.paradigm == "Stroop 色词冲突" and event.text().upper() in set(STROOP_RESPONSE_KEYS.values()):
             self._handle_stroop_response(event.text().upper())
-        elif self.paradigm == "听觉 Oddball" and event.key() == Qt.Key.Key_Space:
+        elif self.paradigm == "听觉 Oddball" and event.text().upper() == "J":
             if self._responded_to_item or self._oddball_index == 0:
                 return
             self._responded_to_item = True
@@ -940,7 +1041,7 @@ class StimulusWindow(QWidget):
                 "命中" if self.current_target else "误报",
                 {
                     **self._current_payload,
-                    "actual_response": "Space",
+                    "actual_response": "J",
                     "is_correct": self.current_target,
                     "response_time_ms": response_time_ms,
                 },
@@ -952,30 +1053,34 @@ class StimulusWindow(QWidget):
             self._emit("rating", event.text(), {"category": self._emotion_category})
         self.update()
 
-    def _handle_nback_response(self) -> None:
+    def _handle_nback_response(self, key: str) -> None:
         if self._responded_to_item or "is_target" not in self._current_payload:
             return
         response_time_ms = max(0.0, (time.monotonic() - self._current_started_at) * 1000.0)
-        if response_time_ms > 1800.0:
+        if response_time_ms > 2000.0:
             return
         self._responded_to_item = True
         practice = bool(self._current_payload.get("is_practice", False))
-        correct = self.current_target
+        correct = key == self._current_payload.get("correct_response")
+        condition = str(self._current_payload["condition"])
         if not practice:
             self.responses += 1
-            if correct:
+            if self.current_target and key == "J":
                 self.hits += 1
-                self._response_times_ms.append(response_time_ms)
-            else:
+            if not self.current_target and key == "J":
                 self._false_alarms += 1
+            if correct:
+                self._nback_condition_correct[condition] += 1
+                self._nback_condition_rts[condition].append(response_time_ms)
+                self._response_times_ms.append(response_time_ms)
         else:
-            self._feedback_text = "正确" if correct else "这次不相同"
+            self._feedback_text = "正确" if correct else f"正确键：{self._current_payload['correct_response']}"
         self._emit(
             "response",
-            "命中" if correct else "误报",
+            "正确" if correct else "错误",
             {
                 **self._current_payload,
-                "actual_response": "Space",
+                "actual_response": key,
                 "is_correct": correct,
                 "response_time_ms": response_time_ms,
             },
@@ -1020,34 +1125,14 @@ class StimulusWindow(QWidget):
             self._emotion_phase_started_at = now
             self._emit("emotion_baseline", "中性注视基线", {"planned_duration_s": 20.0})
             return
-        if event.text().upper() == "S" and self._emotion_phase in {
-            "fixation",
-            "image",
-            "valence_rating",
-            "arousal_rating",
-        }:
+        if self._emotion_phase == "break" and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._start_next_emotion_trial(now)
+            return
+        if event.text().upper() == "S" and self._emotion_phase in {"fixation", "image"}:
             payload = {**self._emotion_payload(), "was_skipped": True}
             self._emotion_phase = "blank"
             self._emotion_phase_started_at = now
             self._emit("emotion_skip", "已跳过当前图片", payload)
-            return
-        if event.text() not in tuple("123456789"):
-            return
-        rating = int(event.text())
-        if self._emotion_phase == "valence_rating":
-            self._emotion_valence_rating = rating
-            self.responses += 1
-            self._emit("valence_response", str(rating), self._emotion_payload())
-            self._emotion_phase = "arousal_rating"
-            self._emotion_phase_started_at = now
-            self._emit("arousal_rating", "请评价唤醒 1–9", self._emotion_payload())
-        elif self._emotion_phase == "arousal_rating":
-            self._emotion_arousal_rating = rating
-            self.responses += 1
-            self._emit("arousal_response", str(rating), self._emotion_payload())
-            self._emotion_phase = "blank"
-            self._emotion_phase_started_at = now
-            self._emit("emotion_trial_complete", "评分完成", self._emotion_payload())
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self.stop_protocol()

@@ -10,6 +10,8 @@ from typing import Any
 class ProtocolPreset:
     label: str
     rest_duration_sec: int
+    rest_repetitions: int
+    assr_cycles: int
     nback_trials: int
     nback_targets: int
     stroop_trials: int
@@ -18,11 +20,11 @@ class ProtocolPreset:
 
 
 PRESETS: dict[str, ProtocolPreset] = {
-    "快速演示": ProtocolPreset("快速演示", 30, 30, 8, 30, 100, 3),
-    "完整采集": ProtocolPreset("完整采集", 60, 60, 15, 60, 200, 15),
+    "快速演示": ProtocolPreset("快速演示", 30, 1, 3, 30, 8, 30, 100, 3),
+    "完整采集": ProtocolPreset("完整采集", 60, 2, 10, 120, 40, 120, 300, 15),
 }
 
-PROTOCOL_VERSION = "2026.08"
+PROTOCOL_VERSION = "2026.08.07"
 TIMING_STATUS = "software_sync_uncalibrated"
 
 
@@ -43,7 +45,7 @@ class StroopTrial:
     correct_key: str
 
 
-STROOP_KEY_MAP = {"红": "D", "绿": "F", "蓝": "J", "黄": "K"}
+STROOP_RESPONSE_KEYS = {"congruent": "J", "incongruent": "F"}
 
 
 def _nonadjacent_positions(total: int, count: int, rng: random.Random) -> set[int]:
@@ -76,7 +78,7 @@ def generate_stroop_trials(trials: int, *, seed: int = 17) -> tuple[StroopTrial,
     if trials <= 0 or trials % 2:
         raise ValueError("trials must be a positive even number")
     rng = random.Random(seed)
-    colors = tuple(STROOP_KEY_MAP)
+    colors = ("红", "绿", "蓝", "黄")
     per_condition = trials // 2
     congruent: list[tuple[str, str, str]] = []
     incongruent: list[tuple[str, str, str]] = []
@@ -87,16 +89,22 @@ def generate_stroop_trials(trials: int, *, seed: int = 17) -> tuple[StroopTrial,
         if word == ink:
             word = colors[(colors.index(ink) + 1) % len(colors)]
         incongruent.append((word, ink, "incongruent"))
-    candidates = congruent + incongruent
-    for _attempt in range(1000):
-        rng.shuffle(candidates)
-        keys = [STROOP_KEY_MAP[ink] for _word, ink, _condition in candidates]
-        if all(len(set(keys[index : index + 4])) > 1 for index in range(len(keys) - 3)):
-            return tuple(
-                StroopTrial(index, word, ink, condition, STROOP_KEY_MAP[ink])
-                for index, (word, ink, condition) in enumerate(candidates)
-            )
-    raise RuntimeError("could not generate Stroop sequence without long response runs")
+    rng.shuffle(congruent)
+    rng.shuffle(incongruent)
+    conditions = (congruent, incongruent) if rng.random() < 0.5 else (incongruent, congruent)
+    candidates = [item for pair in zip(*conditions) for item in pair]
+    return tuple(
+        StroopTrial(index, word, ink, condition, STROOP_RESPONSE_KEYS[condition])
+        for index, (word, ink, condition) in enumerate(candidates)
+    )
+
+
+def balanced_accuracy(
+    *, first_correct: int, first_total: int, second_correct: int, second_total: int
+) -> float:
+    first_rate = first_correct / first_total if first_total else 0.0
+    second_rate = second_correct / second_total if second_total else 0.0
+    return (first_rate + second_rate) / 2.0
 
 
 def signal_detection_metrics(
@@ -148,6 +156,13 @@ def generate_oddball_sequence(
     compressed = sorted(rng.sample(range(trials - deviant_count + 1), deviant_count))
     deviant_positions = {position + offset for offset, position in enumerate(compressed)}
     return tuple("deviant" if index in deviant_positions else "standard" for index in range(trials))
+
+
+def generate_oddball_soa(trials: int, *, seed: int = 17) -> tuple[float, ...]:
+    if trials <= 0:
+        raise ValueError("trials must be positive")
+    rng = random.Random(seed)
+    return tuple(rng.uniform(1.2, 1.6) for _ in range(trials))
 
 
 @dataclass(frozen=True, slots=True)
