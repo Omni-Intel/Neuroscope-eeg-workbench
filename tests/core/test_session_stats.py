@@ -111,3 +111,27 @@ def test_session_yields_when_source_has_no_new_samples() -> None:
     controller.stop()
 
     assert source.read_count < 100
+
+
+class _CollectingRecorder:
+    def __init__(self) -> None:
+        self.chunks: list[EEGChunk] = []
+
+    def submit(self, chunk: EEGChunk) -> None:
+        self.chunks.append(chunk)
+
+
+def test_session_recorder_hook_receives_full_chunks_before_display_selection() -> None:
+    source = _StreamingSource()
+    recorder = _CollectingRecorder()
+    controller = SessionController(source)
+    controller.attach_recorder(recorder)
+    controller.start()
+    deadline = time.monotonic() + 1.0
+    while not recorder.chunks and time.monotonic() < deadline:
+        time.sleep(0.01)
+    controller.stop()
+
+    assert recorder.chunks
+    assert recorder.chunks[0].metadata.channel_names == ("C3", "C4")
+    assert recorder.chunks[0].data.shape[0] == 2

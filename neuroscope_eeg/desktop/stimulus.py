@@ -26,6 +26,8 @@ from neuroscope_eeg.desktop.protocols import (
     generate_oddball_sequence,
     generate_oddball_soa,
     generate_stroop_trials,
+    nback_item_duration,
+    nback_response_is_open,
     signal_detection_metrics,
 )
 
@@ -102,6 +104,7 @@ class StimulusWindow(QWidget):
         self.hits = 0
         self.responses = 0
         self.missed_frames = 0
+        self.stop_reason = "completed"
 
     def start_protocol(self, paradigm: str, screen, preset_label: str = "快速演示") -> None:
         if paradigm in {"听觉 ASSR", "听觉 Oddball"} and self._audio_player is None:
@@ -128,6 +131,7 @@ class StimulusWindow(QWidget):
         self._response_times_ms = []
         self._feedback_text = ""
         self._task_started_at = self.started_at
+        self.stop_reason = "completed"
         self._prepare_protocol()
         self.current_target = False
         self._responded_to_item = False
@@ -167,12 +171,13 @@ class StimulusWindow(QWidget):
             handle.requestActivate()
         self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
-    def stop_protocol(self) -> None:
+    def stop_protocol(self, reason: str = "completed") -> None:
         if self._audio_player is not None:
             self._audio_player.stop()
         if not self.timer.isActive():
             self.hide()
             return
+        self.stop_reason = reason
         final_payload = dict(self._current_payload)
         if self.paradigm == "情绪图片唤醒":
             final_payload.update(self._emotion_payload())
@@ -510,7 +515,7 @@ class StimulusWindow(QWidget):
             self.current_symbol = symbol
             self.current_target = bool(trial and trial.is_target)
             self._responded_to_item = False
-            self._current_started_at = now
+            self._current_started_at = now - schedule_elapsed
             self._feedback_text = ""
             if symbol == "正式开始":
                 self._current_payload = {"is_practice": False, "formal_trial_index": -1}
@@ -543,21 +548,13 @@ class StimulusWindow(QWidget):
         if symbol == "正式开始":
             self._set_phase("formal_ready", "正式试次即将开始", self._current_payload)
         elif trial is None:
-            if schedule_elapsed < 0.5:
-                self._set_phase("nback_context", symbol, self._current_payload)
-            else:
-                self._set_phase("nback_blank", "", self._current_payload)
-        elif practice and schedule_elapsed >= 2.0:
-            self._finalize_nback_trial()
-            self._set_phase("nback_feedback", self._feedback_text, self._current_payload)
-        elif schedule_elapsed < 0.5:
-            self._set_phase("nback_stimulus", trial.symbol, self._current_payload)
+            self._set_phase("nback_context", symbol, self._current_payload)
         else:
-            self._set_phase("nback_blank", "", self._current_payload)
+            self._set_phase("nback_stimulus", trial.symbol, self._current_payload)
 
     def _nback_item_duration(self, item_index: int) -> float:
-        _symbol, trial, practice = self._nback_items[item_index]
-        return 2.4 if trial is not None and practice else 2.0
+        symbol, _trial, _practice = self._nback_items[item_index]
+        return nback_item_duration(symbol)
 
     def _finalize_nback_trial(self) -> None:
         if self._responded_to_item or "is_target" not in self._current_payload:
@@ -834,21 +831,7 @@ class StimulusWindow(QWidget):
                 text, hint = self._last_phase.partition(":")[2] or "准备", "减少眨眼和身体活动"
             self._paint_center(painter, text, hint, QColor("#0f172a"))
         elif self.paradigm == "2-back 工作记忆":
-            phase = self._last_phase.partition(":")[0]
-            if phase == "nback_baseline":
-                text = "+"
-            elif phase in {"nback_blank", "nback_feedback"}:
-                text = ""
-            else:
-                text = self.current_symbol
-            hint = (
-                "静息基线｜保持注视"
-                if phase == "nback_baseline"
-                else f"一致按 J，不一致按 F｜正式试次 {self.trials}/{self.preset.nback_trials}"
-            )
-            if phase == "nback_feedback" and self._feedback_text:
-                hint += f"｜{self._feedback_text}"
-            self._paint_center(painter, text, hint, QColor("#0f172a"))
+            self._paint_nback(painter)
         elif self.paradigm == "Stroop 色词冲突":
             self._paint_stroop(painter)
         elif self.paradigm == "情绪图片唤醒":
@@ -899,6 +882,39 @@ class StimulusWindow(QWidget):
         painter.setPen(QColor("#cbd5e1"))
         painter.setFont(QFont("Microsoft YaHei UI", 18))
         painter.drawText(self.rect().adjusted(80, self.height() - 150, -80, -50), Qt.AlignmentFlag.AlignCenter, hint)
+
+    def _paint_nback(self, painter: QPainter) -> None:
+        phase = self._last_phase.partition(":")[0]
+        if phase == "nback_baseline":
+            self._paint_center(painter, "+", "静息基线｜保持注视", QColor("#0f172a"))
+            return
+        if phase == "formal_ready":
+            self._paint_center(painter, "正式开始", "一致按 J，不一致按 F", QColor("#0f172a"))
+            return
+
+        painter.fillRect(self.rect(), QColor("#0f172a"))
+        digit_font = QFont("Microsoft YaHei UI", 96, QFont.Weight.Bold)
+        digit_font.setPixelSize(max(96, min(180, int(min(self.width(), self.height()) * 0.22))))
+        painter.setFont(digit_font)
+        painter.setPen(QColor("#f8fafc"))
+        digit_rect = self.rect().adjusted(80, 40, -80, -self.height() // 4)
+        painter.drawText(digit_rect, Qt.AlignmentFlag.AlignCenter, self.current_symbol)
+
+        if self._current_payload.get("is_practice") and self._feedback_text:
+            painter.setFont(QFont("Microsoft YaHei UI", 24, QFont.Weight.Bold))
+            painter.setPen(QColor("#22c55e") if self._feedback_text == "正确" else QColor("#f87171"))
+            feedback_rect = self.rect().adjusted(80, self.height() // 2 + 50, -80, -self.height() // 4)
+            painter.drawText(feedback_rect, Qt.AlignmentFlag.AlignCenter, self._feedback_text)
+
+        painter.setFont(QFont("Microsoft YaHei UI", 18))
+        painter.setPen(QColor("#cbd5e1"))
+        stage = "练习" if self._current_payload.get("is_practice") else "正式"
+        hint = f"一致按 J，不一致按 F｜{stage}｜正式试次 {self.trials}/{self.preset.nback_trials}"
+        painter.drawText(
+            self.rect().adjusted(80, self.height() - 150, -80, -50),
+            Qt.AlignmentFlag.AlignCenter,
+            hint,
+        )
 
     def _paint_stroop(self, painter: QPainter) -> None:
         phase = self._last_phase.partition(":")[0]
@@ -984,7 +1000,7 @@ class StimulusWindow(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
-            self.stop_protocol()
+            self.stop_protocol("escape")
             return
         if self.paradigm == "视觉图像识别" and event.key() == Qt.Key.Key_Space:
             if self._responded_to_item:
@@ -1057,7 +1073,7 @@ class StimulusWindow(QWidget):
         if self._responded_to_item or "is_target" not in self._current_payload:
             return
         response_time_ms = max(0.0, (time.monotonic() - self._current_started_at) * 1000.0)
-        if response_time_ms > 2000.0:
+        if not nback_response_is_open(response_time_ms):
             return
         self._responded_to_item = True
         practice = bool(self._current_payload.get("is_practice", False))
@@ -1135,5 +1151,5 @@ class StimulusWindow(QWidget):
             self._emit("emotion_skip", "已跳过当前图片", payload)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        self.stop_protocol()
+        self.stop_protocol("window_closed")
         event.accept()

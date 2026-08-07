@@ -6,6 +6,7 @@ __pycache__/
 outputs/
 /build/
 /diagnostics/
+/recordings/
 .pytest_cache/
 .DS_Store
 .superpowers/

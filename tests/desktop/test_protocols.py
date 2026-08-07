@@ -4,6 +4,8 @@ from neuroscope_eeg.desktop.protocols import (
     balanced_accuracy,
     frame_locked_frequencies,
     generate_nback_trials,
+    nback_item_duration,
+    nback_response_is_open,
     generate_oddball_sequence,
     generate_oddball_soa,
     generate_stroop_trials,
@@ -91,3 +93,11 @@ def test_signal_detection_metrics_include_half_trial_corrected_d_prime() -> None
 
 def test_balanced_accuracy_weights_conditions_equally() -> None:
     assert balanced_accuracy(first_correct=36, first_total=40, second_correct=40, second_total=80) == 0.7
+
+
+def test_nback_digits_are_seamless_1500_ms_items_with_a_separate_ready_page() -> None:
+    assert nback_item_duration("4") == 1.5
+    assert nback_item_duration("正式开始") == 2.0
+    assert nback_response_is_open(0.0)
+    assert nback_response_is_open(1499.999)
+    assert not nback_response_is_open(1500.0)

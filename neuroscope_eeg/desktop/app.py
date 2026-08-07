@@ -43,6 +43,7 @@ from neuroscope_eeg.desktop.performance import FpsTracker, fps_level, timer_inte
 from neuroscope_eeg.desktop.protocols import PRESETS, StimulusEvent, frame_locked_frequencies
 from neuroscope_eeg.desktop.audio import AudioUnavailableError
 from neuroscope_eeg.desktop.stimulus import StimulusWindow
+from neuroscope_eeg.io.session_recorder import RecordingError, SessionRecorder
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
 from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
 
@@ -90,6 +91,7 @@ class NeuroScopeWindow(QMainWindow):
         self.setWindowTitle("NeuroScope｜多范式脑电可视化工作台")
         self.resize(1500, 920)
         self.controller: SessionController | None = None
+        self._session_recorder: SessionRecorder | None = None
         self._analysis_data: np.ndarray | None = None
         self._analysis_metadata: SourceMetadata | None = None
         self._fps = FpsTracker()
@@ -152,9 +154,23 @@ class NeuroScopeWindow(QMainWindow):
             self.target_fps.addItem(f"{fps} FPS", fps)
         self.target_fps.setCurrentIndex(1)
         self.target_fps.currentIndexChanged.connect(self._refresh_rate_changed)
+        self.participant_id = QLineEdit()
+        self.participant_id.setPlaceholderText("完整采集必填，例如 S01")
+        self.recording_root = QLineEdit(str(Path.cwd() / "recordings"))
+        recording_root_row = QWidget()
+        recording_root_layout = QHBoxLayout(recording_root_row)
+        recording_root_layout.setContentsMargins(0, 0, 0, 0)
+        recording_root_layout.setSpacing(5)
+        recording_root_browse = QPushButton("选择")
+        recording_root_browse.clicked.connect(self._browse_recording_root)
+        recording_root_layout.addWidget(self.recording_root, 1)
+        recording_root_layout.addWidget(recording_root_browse)
+        self.recording_root_browse = recording_root_browse
         form.addRow("数据源", self.source_select)
         form.addRow("任务范式", self.paradigm_select)
         form.addRow("协议预设", self.protocol_preset)
+        form.addRow("受试者编号", self.participant_id)
+        form.addRow("记录目录", recording_root_row)
         form.addRow("采样率 Hz", self.sfreq)
         form.addRow("通道数", self.channels)
         form.addRow("画面刷新", self.target_fps)
@@ -448,7 +464,7 @@ class NeuroScopeWindow(QMainWindow):
         )
         self.nback_protocol.setText(
             f"10 个练习 + {preset.nback_trials} 个正式试次｜一致 {preset.nback_targets} / 不一致 "
-            f"{preset.nback_trials - preset.nback_targets}｜一致 J、不一致 F｜仅练习反馈"
+            f"{preset.nback_trials - preset.nback_targets}｜每个数字 1500ms 无缝切换｜一致 J、不一致 F｜仅练习反馈"
         )
         self.stroop_protocol.setText(
             f"12 个练习 + {preset.stroop_trials} 个正式试次｜一致/不一致各半｜一致 J、不一致 F｜仅练习反馈"
@@ -484,44 +500,98 @@ class NeuroScopeWindow(QMainWindow):
         if self.controller is None or self.controller.state is not ConnectionState.RUNNING:
             QMessageBox.information(self, "请先启动采集", "请先启动模拟源或真机采集，再开始第二屏刺激。")
             return
+        if self.stimulus_window.timer.isActive():
+            QMessageBox.information(self, "范式正在运行", "请先停止当前范式，再启动下一次记录。")
+            return
         self.stimulus_events.clear()
         self._protocol_reference_metrics.clear()
         self._ssvep_checked_trials.clear()
         self._ssvep_trial_hits = 0
         screen = self._selected_screen()
+        if self.protocol_preset.currentText() == "完整采集":
+            try:
+                self._session_recorder = SessionRecorder.start(
+                    root_dir=self.recording_root.text().strip(),
+                    participant_id=self.participant_id.text(),
+                    paradigm=self.paradigm_select.currentText(),
+                    preset=self.protocol_preset.currentText(),
+                    metadata=self.controller.source.metadata,
+                    source_sample_offset=self.controller.samples_received,
+                )
+                self.controller.attach_recorder(self._session_recorder)
+                self.participant_id.setEnabled(False)
+                self.recording_root.setEnabled(False)
+                self.recording_root_browse.setEnabled(False)
+                self.stimulus_status.setText(f"正在写入｜{self._session_recorder.session_dir}")
+            except (OSError, ValueError, RuntimeError, RecordingError) as exc:
+                self._finish_session_recording(status="error", reason="initialization_failed")
+                QMessageBox.critical(self, "无法开始完整记录", str(exc))
+                self.stimulus_status.setText(f"未启动｜{exc}")
+                return
         try:
             self.stimulus_window.start_protocol(
                 self.paradigm_select.currentText(), screen, self.protocol_preset.currentText()
             )
         except (AudioUnavailableError, ValueError) as exc:
+            self._finish_session_recording(status="error", reason="stimulus_start_failed")
             QMessageBox.warning(self, "范式无法启动", str(exc))
             self.stimulus_status.setText(f"未启动｜{exc}")
             return
         if self.paradigm_select.currentText() == "SSVEP":
             self.ssvep_targets.setText(", ".join(f"{value:g}" for value in self.stimulus_window.ssvep_frequencies))
+        recording_text = (
+            f"｜正在写入 {self._session_recorder.session_dir}" if self._session_recorder is not None else ""
+        )
         self.stimulus_status.setText(
             f"运行中｜{self.protocol_preset.currentText()}｜{self.display_select.currentText()}｜"
-            "软件时间戳同步｜Esc 可退出刺激"
+            f"软件时间戳同步｜Esc 可退出刺激{recording_text}"
         )
 
     def _stop_stimulus(self) -> None:
-        self.stimulus_window.stop_protocol()
+        self.stimulus_window.stop_protocol("manual_stop")
 
     def _stimulus_stopped(self) -> None:
+        reason = self.stimulus_window.stop_reason
+        status = "completed" if reason == "completed" else "aborted"
+        if (self.controller is not None and self.controller.error) or (
+            self._session_recorder is not None and self._session_recorder.error
+        ):
+            status = "error"
+            reason = "recording_error"
+        session_dir = self._finish_session_recording(status=status, reason=reason)
         summary = self.stimulus_window.summary()
         hit_rate = summary.get("behavior_accuracy", summary["behavior_hit_rate"])
         hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
+        stop_label = {"completed": "已完成", "aborted": "已中止", "error": "保存失败"}[status]
         self.stimulus_status.setText(
-            f"已停止｜试次 {summary['trials']}｜行为表现 {hit_rate_text}｜"
+            f"{stop_label}｜试次 {summary['trials']}｜行为表现 {hit_rate_text}｜"
             f"误报 {summary['false_alarms']}｜估计丢帧 {summary['missed_frames_estimate']}"
+            + (f"｜记录：{session_dir}" if session_dir is not None else "")
         )
 
     def _on_stimulus_event(self, event: StimulusEvent) -> None:
         if self.controller is not None:
-            event.payload.setdefault("eeg_sample_index", self.controller.samples_received)
+            event.payload.setdefault("source_sample_index", self.controller.samples_received)
+            if self._session_recorder is not None:
+                event.payload["eeg_sample_index"] = self._session_recorder.submitted_samples
+            else:
+                event.payload.setdefault("eeg_sample_index", self.controller.samples_received)
             self._capture_protocol_reference(event)
         event.payload.update(self._protocol_reference_metrics)
         self.stimulus_events.append(event)
+        if self._session_recorder is not None:
+            sample_index = int(event.payload["eeg_sample_index"])
+            try:
+                self._session_recorder.record_event(
+                    event,
+                    eeg_sample_index=sample_index,
+                    eeg_session_sec=sample_index / self._session_recorder.sfreq,
+                )
+            except RecordingError as exc:
+                self.stimulus_status.setText(f"保存失败｜{exc}")
+                if event.phase != "stop" and self.stimulus_window.timer.isActive():
+                    QTimer.singleShot(0, lambda: self.stimulus_window.stop_protocol("recording_error"))
+                return
         if event.paradigm == "SSVEP" and event.phase == "rest":
             trial = int(event.payload.get("trial", -1))
             target = event.payload.get("target_frequency")
@@ -529,7 +599,12 @@ class NeuroScopeWindow(QMainWindow):
                 self._ssvep_checked_trials.add(trial)
                 self._ssvep_trial_hits += int(self._last_decoder_value == f"{float(target):g} Hz")
         stage = "练习" if event.payload.get("is_practice") else str(event.payload.get("preset", "正式"))
-        self.stimulus_status.setText(f"{event.paradigm}｜{stage}｜{event.phase}｜{event.label}｜软件同步")
+        recording_text = (
+            f"｜正在写入 {self._session_recorder.session_dir}" if self._session_recorder is not None else ""
+        )
+        self.stimulus_status.setText(
+            f"{event.paradigm}｜{stage}｜{event.phase}｜{event.label}｜软件同步{recording_text}"
+        )
 
     def _capture_protocol_reference(self, event: StimulusEvent) -> None:
         if self.controller is None:
@@ -621,6 +696,32 @@ class NeuroScopeWindow(QMainWindow):
         if path:
             self.replay_path.setText(path)
 
+    def _browse_recording_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择脑电记录目录",
+            self.recording_root.text().strip() or str(Path.cwd()),
+        )
+        if path:
+            self.recording_root.setText(path)
+
+    def _finish_session_recording(self, *, status: str, reason: str) -> Path | None:
+        recorder = self._session_recorder
+        if recorder is None:
+            return None
+        if self.controller is not None:
+            self.controller.detach_recorder(recorder)
+        try:
+            recorder.stop(status=status, reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "脑电保存失败", str(exc))
+        finally:
+            self._session_recorder = None
+            self.participant_id.setEnabled(True)
+            self.recording_root.setEnabled(True)
+            self.recording_root_browse.setEnabled(True)
+        return recorder.session_dir
+
     def _build_source(self):
         label = self.source_select.currentText()
         sfreq = float(self.sfreq.value())
@@ -671,6 +772,7 @@ class NeuroScopeWindow(QMainWindow):
 
     def _stop_session(self) -> None:
         self._stop_stimulus()
+        self._finish_session_recording(status="aborted", reason="acquisition_stopped")
         self.wave_timer.stop()
         self.status_timer.stop()
         self.analysis_timer.stop()
@@ -832,7 +934,7 @@ class NeuroScopeWindow(QMainWindow):
                 "视觉图像识别": {"stimulus", "response"},
                 "注意力": {"mental_math", "problem", "response"},
                 "静息睁眼/闭眼": {"eyes_open", "eyes_closed"},
-                "2-back 工作记忆": {"nback_trial", "nback_stimulus", "nback_blank", "response"},
+                "2-back 工作记忆": {"nback_trial", "nback_stimulus", "response"},
                 "Stroop 色词冲突": {"stroop_stimulus", "stroop_blank", "response"},
                 "情绪图片唤醒": {
                     "emotion_image",
@@ -936,6 +1038,8 @@ class NeuroScopeWindow(QMainWindow):
         if self.controller.error:
             self.state_value.setText(f"error: {self.controller.error}")
             self.state_value.setStyleSheet("color: #ef4444;")
+            if self.stimulus_window.timer.isActive():
+                QTimer.singleShot(0, lambda: self.stimulus_window.stop_protocol("recording_error"))
         elif self.controller.state is ConnectionState.RUNNING:
             self.state_value.setStyleSheet("color: #22c55e;")
 

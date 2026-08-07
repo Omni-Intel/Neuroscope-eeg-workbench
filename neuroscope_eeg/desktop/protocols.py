@@ -26,6 +26,17 @@ PRESETS: dict[str, ProtocolPreset] = {
 
 PROTOCOL_VERSION = "2026.08.07"
 TIMING_STATUS = "software_sync_uncalibrated"
+NBACK_STIMULUS_DURATION_SEC = 1.5
+NBACK_FORMAL_READY_DURATION_SEC = 2.0
+NBACK_RESPONSE_WINDOW_MS = NBACK_STIMULUS_DURATION_SEC * 1000.0
+
+
+def nback_item_duration(symbol: str) -> float:
+    return NBACK_FORMAL_READY_DURATION_SEC if symbol == "正式开始" else NBACK_STIMULUS_DURATION_SEC
+
+
+def nback_response_is_open(response_time_ms: float) -> bool:
+    return 0.0 <= response_time_ms < NBACK_RESPONSE_WINDOW_MS
 
 
 @dataclass(frozen=True, slots=True)
