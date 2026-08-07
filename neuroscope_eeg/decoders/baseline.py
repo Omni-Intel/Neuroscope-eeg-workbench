@@ -215,8 +215,6 @@ class EmotionBaselineDecoder:
             "Fp1/Fp2 beta/alpha": beta_alpha,
             "当前图片类别": fine_category,
             "当前粗效价": str(payload.get("valence", "未设置")),
-            "效价评分": str(payload.get("valence_rating", "未评分")),
-            "唤醒评分": str(payload.get("arousal_rating", "未评分")),
         }
         if "emotion_baseline_alpha_db" in payload:
             metrics["图片-基线 alpha dB"] = float(np.mean((left_alpha_db, right_alpha_db))) - float(
@@ -287,11 +285,14 @@ class NBackBaselineDecoder:
         metrics: dict[str, float | str] = {
             "前额 theta 平均 dB": float(np.mean(bands["theta"][frontal])),
             "正式试次": float(payload.get("trials", 0)),
-            "命中": float(payload.get("hits", 0)),
-            "误报": float(payload.get("false_alarms", 0)),
-            "行为命中率": float(payload.get("behavior_hit_rate", 0.0) or 0.0),
+            "总体正确率": float(payload.get("behavior_accuracy", 0.0) or 0.0),
+            "平衡正确率": float(payload.get("balanced_accuracy", 0.0) or 0.0),
+            "一致正确率": float(payload.get("match_accuracy", 0.0) or 0.0),
+            "不一致正确率": float(payload.get("nonmatch_accuracy", 0.0) or 0.0),
+            "遗漏": float(payload.get("omissions", 0)),
             "d-prime": float(payload.get("d_prime", 0.0) or 0.0),
-            "正确命中中位反应时 ms": float(payload.get("median_response_time_ms", 0.0) or 0.0),
+            "一致中位反应时 ms": float(payload.get("match_median_response_time_ms", 0.0) or 0.0),
+            "不一致中位反应时 ms": float(payload.get("nonmatch_median_response_time_ms", 0.0) or 0.0),
         }
         if "nback_baseline_theta_db" in payload:
             metrics["任务-基线 theta dB"] = float(metrics["前额 theta 平均 dB"]) - float(
@@ -304,7 +305,7 @@ class NBackBaselineDecoder:
         return DecoderResult(
             value=f"前额 theta {metrics['前额 theta 平均 dB']:.1f} dB",
             confidence=0.45,
-            detail="频带功率与行为均为本次会话趋势，不是智力、记忆年龄或临床评分。",
+            detail="没有 0-back 对照，因此不宣称负荷诱发 theta；J/F 固定映射也会混入左右手效应，Fp 偏侧仅作探索。",
             metrics=metrics,
         )
 
@@ -330,9 +331,13 @@ class StroopBaselineDecoder:
             "前额 beta 平均 dB": float(np.mean(bands["beta"][frontal])),
             "正式试次": float(payload.get("trials", 0)),
             "总体正确率": float(payload.get("behavior_accuracy", 0.0) or 0.0),
+            "平衡正确率": float(payload.get("balanced_accuracy", 0.0) or 0.0),
             "Stroop 反应时干扰 ms": float(payload.get("stroop_interference_ms", 0.0) or 0.0),
+            "Stroop 正确率代价": float(payload.get("stroop_accuracy_cost", 0.0) or 0.0),
             "一致条件正确率": float(payload.get("congruent_accuracy", 0.0) or 0.0),
             "不一致条件正确率": float(payload.get("incongruent_accuracy", 0.0) or 0.0),
+            "一致中位反应时 ms": float(payload.get("congruent_median_response_time_ms", 0.0) or 0.0),
+            "不一致中位反应时 ms": float(payload.get("incongruent_median_response_time_ms", 0.0) or 0.0),
             "ERP 状态": "已校准" if timing_status == "calibrated" else "时序待校准",
         }
         for index in frontal:
@@ -340,7 +345,7 @@ class StroopBaselineDecoder:
         return DecoderResult(
             value=f"前额 θ/β {metrics['前额 theta 平均 dB']:.1f}/{metrics['前额 beta 平均 dB']:.1f} dB",
             confidence=0.45,
-            detail="行为与连续频带趋势可立即展示；Fpz N2/N450 试次锁定趋势需完成显示到 EEG 时序校准。",
+            detail="行为与连续频带趋势可立即展示；J/F 固定映射混入左右手效应，Fpz N2 类趋势需完成显示到 EEG 时序校准。",
             metrics=metrics,
         )
 
@@ -409,8 +414,11 @@ class AuditoryOddballBaselineDecoder:
             "已呈现试次": float(trials),
             "偏差音数量": float(targets),
             "行为命中率": float(hit_rate),
+            "漏报": float(payload.get("misses", max(0, targets - hits))),
+            "漏报率": float(payload.get("miss_rate", 1.0 - hit_rate if targets else 0.0)),
             "误报": float(false_alarms),
             "误报率": float(false_alarm_rate),
+            "d-prime": float(payload.get("d_prime", 0.0) or 0.0),
             "正确命中中位反应时 ms": float(payload.get("median_response_time_ms", 0.0) or 0.0),
             "同步状态": "已校准" if timing_status == "calibrated" else "待真机校准",
         }
@@ -424,7 +432,7 @@ class AuditoryOddballBaselineDecoder:
         return DecoderResult(
             value="ERP 时序待校准",
             confidence=0.0,
-            detail="设备不支持事件标记；声音事件已记录，需完成设备时间戳映射和音频延迟校准后再输出 N1/MMN/晚期正波趋势。",
+            detail="当前为主动 Oddball：可探索 T3/T4 的 N1/MMN 类趋势与 Fpz 靶音晚期正波；软件事件标记已记录，需完成音频到 EEG 时序校准。",
             metrics=metrics,
             missing=tuple(missing_items),
         )

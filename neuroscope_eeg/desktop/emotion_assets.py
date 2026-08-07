@@ -73,12 +73,26 @@ def select_emotion_images(
     if per_category <= 0 or per_category > 15:
         raise ValueError("per_category must be between 1 and 15")
     rng = random.Random(seed)
-    selected: list[EmotionImage] = []
+    selected_by_category: dict[str, list[EmotionImage]] = {}
     for category in EMOTION_CATEGORIES:
         group = [image for image in images if image.fine_category == category]
-        selected.extend(rng.sample(group, per_category))
+        selected_by_category[category] = rng.sample(group, per_category)
+    if per_category == 15:
+        block_size_per_category = 5
+        blocks: list[list[EmotionImage]] = []
+        for block_index in range(3):
+            block: list[EmotionImage] = []
+            start = block_index * block_size_per_category
+            for category in EMOTION_CATEGORIES:
+                block.extend(selected_by_category[category][start : start + block_size_per_category])
+            blocks.append(block)
+    else:
+        blocks = [[image for group in selected_by_category.values() for image in group]]
     for _attempt in range(1000):
-        rng.shuffle(selected)
+        selected: list[EmotionImage] = []
+        for block in blocks:
+            rng.shuffle(block)
+            selected.extend(block)
         if all(
             len({image.fine_category for image in selected[index : index + 3]}) > 1
             for index in range(len(selected) - 2)
