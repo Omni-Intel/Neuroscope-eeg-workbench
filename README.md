@@ -1,12 +1,12 @@
 # NeuroScope
 
-**多范式脑电可视化工作台**，用于博睿康 Neuracle、强脑 BrainCo、模拟 EEG 和 NPZ 回放。
+**多范式脑电可视化工作台**，用于博睿康 Neuracle、强脑 BrainCo、test-头带（TD10 LSL）、模拟 EEG 和 NPZ 回放。
 
 NeuroScope 提供高刷新率桌面控制台、实时波形、频谱、信号质量、实验记录和多类开箱即用的即时基线 decoder。它适合在采集现场快速看趋势；未经个人标定的结果不是科研结论或医疗诊断。
 
 ## 已支持功能
 
-- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BCIGo SDK 1.0.2
+- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BCIGo SDK 1.0.2、test-头带（TD10 LSL EEG）
 - SSVEP：滤波组谐波 CCA，直接输出候选刺激频率
 - 运动想象：C3/C4 的 µ/β 侧化趋势
 - 视觉任务：枕区视觉响应；独立记录图像类别、目标是否出现、是否报告看见
@@ -88,9 +88,17 @@ python -m pip install -r requirements-brainco.txt
 
 BrainCo 实时页会显示累计样本、缓冲样本和最近数据时间。波形经过 1–45 Hz 显示滤波并逐通道独立缩放；官方 32 通道顺序和该处理只作用于 BrainCo，Neuracle 仍使用原有通道和显示链路。
 
+### test-头带（TD10 LSL）
+
+test-头带只接入桌面控制台。先在 iFET 上位机开启 LSL，并保证发布端与 NeuroScope 电脑位于同一局域网；随后双击 `启动-NeuroScope桌面控制台.bat`，选择“test-头带”，点击“查找设备”，再从下拉框选择要连接的头带。多台头带会按来源 ID 分开显示，例如 `ifet-td10-subject-001` 和 `ifet-td10-subject-002`；程序连接时分别查找 `ifet-td10-subject-001:eeg` 和 `ifet-td10-subject-002:eeg`。局域网发现不可用时，也可以直接在下拉框中填写来源 ID。
+
+TD10 适配器要求 EEG 流为固定 4 通道、`int32`，标称采样率为 125、250、500 或 1000 Hz。实际采样率从 LSL `StreamInfo` 读取，通道固定为 `EEG1/EEG2/EEG3/EEG4`，每个 LSL chunk 的时间戳原样进入统一缓冲和记录链路。LSL 数值是有符号 24 位原始 ADC counts；在硬件团队确认参考电压、PGA 增益、模拟前端比例和实际电极位置之前，程序不换算微伏、不应用微伏质量阈值，也不执行范式解码。
+
+完整采集写入 BDF 时，TD10 使用 `ADCcnt` 作为 BDF 的八字符物理维度，并让物理范围与有符号 24 位数字范围一致，从而保存原始计数值；`session.json` 仍完整记录单位 `ADC counts` 和 LSL 来源 ID。当前 NeuroScope 数据源契约只承载 EEG，因此本次桌面接入消费 `_EEG` 流；协议中的 `_AUX`、`_Quality` 和 `_Markers` 不会被删除或改写，但尚未合并进 NeuroScope 会话模型。需要严格判断物理采样与插值行时，应同步使用 LabRecorder 记录全部流为 XDF。
+
 ## Streamlit 备用入口
 
-桌面控制台是实时查看的推荐入口。需要浏览器访问时仍可启动兼容版：
+桌面控制台是实时查看的推荐入口。TD10 LSL 仅在桌面控制台提供；需要浏览器访问其他数据源时仍可启动兼容版：
 
 ```cmd
 .venv312\Scripts\streamlit.exe run streamlit_app.py

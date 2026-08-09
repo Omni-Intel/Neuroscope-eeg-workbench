@@ -10,7 +10,17 @@ from neuroscope_eeg import __version__
 
 
 def environment_report() -> dict[str, object]:
-    packages = ["numpy", "scipy", "matplotlib", "mne", "streamlit", "PySide6", "pyqtgraph", "bcigo_sdk"]
+    packages = [
+        "numpy",
+        "scipy",
+        "matplotlib",
+        "mne",
+        "streamlit",
+        "PySide6",
+        "pyqtgraph",
+        "pylsl",
+        "bcigo_sdk",
+    ]
     return {
         "neuroscope_version": __version__,
         "python": sys.version,

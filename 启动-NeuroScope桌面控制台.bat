@@ -17,7 +17,7 @@ if not defined NEUROSCOPE_PYTHON (
   exit /b 1
 )
 
-"%NEUROSCOPE_PYTHON%" -c "import PySide6, pyqtgraph, pyedflib, numpy, scipy" >nul 2>&1
+"%NEUROSCOPE_PYTHON%" -c "import PySide6, pyqtgraph, pyedflib, pylsl, numpy, scipy" >nul 2>&1
 if errorlevel 1 (
   echo 当前环境缺少桌面控制台依赖。
   echo 请执行："%NEUROSCOPE_PYTHON%" -m pip install -r requirements-desktop.txt

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,6 +35,12 @@ from PySide6.QtWidgets import (
 from neuroscope_eeg.acquisition.legacy import build_brainco_source, build_neuracle_source
 from neuroscope_eeg.acquisition.replay import NPZReplaySource
 from neuroscope_eeg.acquisition.simulated import SimulatedSource
+from neuroscope_eeg.acquisition.td10_lsl import (
+    DEFAULT_TD10_BASE_SOURCE_ID,
+    TD10LSLDevice,
+    TD10LSLSource,
+    discover_td10_devices,
+)
 from neuroscope_eeg.analysis.quality import QualityReport, signal_quality
 from neuroscope_eeg.analysis.spectrum import band_power, power_spectrum
 from neuroscope_eeg.core.models import ConnectionState, EEGEvent, SourceMetadata
@@ -50,7 +56,8 @@ from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robus
 
 MAX_VISIBLE_CHANNELS = 32
 WAVE_WINDOW_SEC = 4.0
-SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo")
+TD10_SOURCE_LABEL = "test-头带"
+SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo", TD10_SOURCE_LABEL)
 PLOT_COLORS = ("#38bdf8", "#f59e0b", "#34d399", "#fb7185", "#a78bfa", "#22d3ee")
 FIXED_PILOT_PARADIGMS = {
     "静息睁眼/闭眼",
@@ -85,6 +92,23 @@ def task_channel_view(
     return data[indices], selected_metadata
 
 
+class TD10DiscoveryWorker(QThread):
+    devices_found = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, timeout_sec: float, parent=None) -> None:
+        super().__init__(parent)
+        self.timeout_sec = float(timeout_sec)
+
+    def run(self) -> None:
+        try:
+            devices = discover_td10_devices(self.timeout_sec)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+            return
+        self.devices_found.emit(devices)
+
+
 class NeuroScopeWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -105,6 +129,7 @@ class NeuroScopeWindow(QMainWindow):
         self._ssvep_trial_hits = 0
         self._protocol_reference_metrics: dict[str, float] = {}
         self._wave_layout_key: tuple[tuple[str, ...], float] | None = None
+        self._td10_discovery_worker: TD10DiscoveryWorker | None = None
 
         self._build_ui()
         self._build_timers()
@@ -215,6 +240,31 @@ class NeuroScopeWindow(QMainWindow):
         brainco_form.addRow("设备 IP", self.brainco_ip)
         brainco_form.addRow("端口", self.brainco_port)
         layout.addWidget(self.brainco_group)
+
+        self.td10_group = QGroupBox(TD10_SOURCE_LABEL)
+        td10_form = QFormLayout(self.td10_group)
+        self.td10_source_id = QComboBox()
+        self.td10_source_id.setEditable(True)
+        self.td10_source_id.addItem(DEFAULT_TD10_BASE_SOURCE_ID)
+        self.td10_source_id.lineEdit().setPlaceholderText("选择设备，也可以手动填写来源 ID")
+        self.td10_discover_button = QPushButton("查找设备")
+        self.td10_discover_button.clicked.connect(self._discover_td10_devices)
+        td10_device_row = QWidget()
+        td10_device_layout = QHBoxLayout(td10_device_row)
+        td10_device_layout.setContentsMargins(0, 0, 0, 0)
+        td10_device_layout.setSpacing(5)
+        td10_device_layout.addWidget(self.td10_source_id, 1)
+        td10_device_layout.addWidget(self.td10_discover_button)
+        self.td10_discovery_status = QLabel("还没查找。先在 iFET 上位机打开 LSL。")
+        self.td10_discovery_status.setWordWrap(True)
+        self.td10_discovery_status.setObjectName("muted")
+        td10_note = QLabel("多台头带请使用不同的来源 ID。数据按 4 通道原始 ADC 计数接收。")
+        td10_note.setWordWrap(True)
+        td10_note.setObjectName("muted")
+        td10_form.addRow("设备", td10_device_row)
+        td10_form.addRow(self.td10_discovery_status)
+        td10_form.addRow(td10_note)
+        layout.addWidget(self.td10_group)
 
         paradigm = QGroupBox("范式参数")
         paradigm_form = QFormLayout(paradigm)
@@ -417,17 +467,32 @@ class NeuroScopeWindow(QMainWindow):
         is_replay = source == "NPZ 回放"
         is_neuracle = source == "博睿康 Neuracle"
         is_brainco = source == "强脑 BrainCo"
-        self.channels.setMaximum(32 if is_brainco else 64)
+        is_td10 = source == TD10_SOURCE_LABEL
+        self.channels.setMaximum(4 if is_td10 else 32 if is_brainco else 64)
         self.replay_group.setVisible(is_replay)
         self.device_group.setVisible(is_neuracle)
         self.neuracle_group.setVisible(is_neuracle)
         self.brainco_group.setVisible(is_brainco)
+        self.td10_group.setVisible(is_td10)
         if is_neuracle:
             self.sfreq.setValue(1000)
             self.channels.setValue(64)
         elif is_brainco:
             self.sfreq.setValue(250)
             self.channels.setValue(32)
+        elif is_td10:
+            self.sfreq.setValue(250)
+            self.channels.setValue(4)
+        self.sfreq.setEnabled(not is_td10)
+        self.channels.setEnabled(not is_td10)
+        if is_td10:
+            self.live_hint.setText(
+                "TD10 显示保留 LSL 原始 ADC counts 和时间戳；未确认硬件比例与电极位置前，不换算微伏或执行范式解码。"
+            )
+        else:
+            self.live_hint.setText(
+                "启动后显示波形。强脑采用逐通道独立缩放；博睿康固定测试范式只展示 Fp1/Fpz/Fp2/T7/T8。"
+            )
         self._brainco_auto_changed()
 
     def _paradigm_changed(self) -> None:
@@ -685,6 +750,48 @@ class NeuroScopeWindow(QMainWindow):
         self.brainco_ip.setEnabled(manual)
         self.brainco_port.setEnabled(manual)
 
+    def _discover_td10_devices(self) -> None:
+        if self._td10_discovery_worker is not None and self._td10_discovery_worker.isRunning():
+            return
+        self.td10_discover_button.setEnabled(False)
+        self.td10_discover_button.setText("查找中…")
+        self.td10_discovery_status.setText("正在查找同一局域网里的头带…")
+        worker = TD10DiscoveryWorker(2.0, self)
+        worker.devices_found.connect(self._td10_devices_found)
+        worker.failed.connect(self._td10_discovery_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._td10_discovery_worker = worker
+        worker.start()
+
+    def _td10_devices_found(self, devices: tuple[TD10LSLDevice, ...]) -> None:
+        self._td10_discovery_worker = None
+        self.td10_discover_button.setText("重新查找")
+        self.td10_discover_button.setEnabled(self.controller is None)
+        if not devices:
+            self.td10_discovery_status.setText("没找到头带。确认上位机已打开 LSL，并检查局域网连接。")
+            return
+
+        current = self.td10_source_id.currentText().strip()
+        self.td10_source_id.clear()
+        selected_index = 0
+        for index, device in enumerate(devices):
+            self.td10_source_id.addItem(device.base_source_id)
+            self.td10_source_id.setItemData(
+                index,
+                f"{device.stream_name}｜{device.sfreq:g} Hz｜{device.source_id}",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            if current in {device.base_source_id, device.source_id}:
+                selected_index = index
+        self.td10_source_id.setCurrentIndex(selected_index)
+        self.td10_discovery_status.setText(f"找到 {len(devices)} 台头带。请选择要连接的设备。")
+
+    def _td10_discovery_failed(self, message: str) -> None:
+        self._td10_discovery_worker = None
+        self.td10_discover_button.setText("重新查找")
+        self.td10_discover_button.setEnabled(self.controller is None)
+        self.td10_discovery_status.setText(f"查找失败：{message}")
+
     def _refresh_rate_changed(self) -> None:
         if self.wave_timer.isActive():
             self.wave_timer.setInterval(timer_interval_ms(int(self.target_fps.currentData())))
@@ -742,6 +849,12 @@ class NeuroScopeWindow(QMainWindow):
                 self.brainco_port.value(),
                 self.brainco_auto.isChecked(),
             )
+        if label == TD10_SOURCE_LABEL:
+            return TD10LSLSource(
+                self.td10_source_id.currentText(),
+                resolve_timeout_sec=5.0,
+                fallback_sfreq=sfreq,
+            )
         names = (
             ("Fp1", "Fp2", "Fpz", "T3", "T4")
             if n_channels == 5
@@ -798,13 +911,21 @@ class NeuroScopeWindow(QMainWindow):
             self.brainco_auto,
             self.brainco_ip,
             self.brainco_port,
+            self.td10_source_id,
+            self.td10_discover_button,
         ):
             widget.setEnabled(enabled)
+        is_td10 = self.source_select.currentText() == TD10_SOURCE_LABEL
+        self.sfreq.setEnabled(enabled and not is_td10)
+        self.channels.setEnabled(enabled and not is_td10)
         if enabled:
             self._brainco_auto_changed()
 
     def _is_brainco(self) -> bool:
         return self.controller is not None and self.controller.source.metadata.source_type == "brainco"
+
+    def _is_td10(self) -> bool:
+        return self.controller is not None and self.controller.source.metadata.source_type == "td10_lsl"
 
     def _latest_data(self) -> tuple[np.ndarray, tuple[str, ...], float] | None:
         if self.controller is None:
@@ -875,11 +996,16 @@ class NeuroScopeWindow(QMainWindow):
             freqs, psd = power_spectrum(self._analysis_data, metadata.sfreq)
             spectrum_db = 10.0 * np.log10(np.mean(psd, axis=0) + 1e-12)
             self.spectrum_curve.setData(freqs, spectrum_db)
+        elif metadata.source_type == "td10_lsl":
+            centered = self._analysis_data - np.mean(self._analysis_data, axis=1, keepdims=True)
+            rms_counts = np.sqrt(np.mean(centered**2, axis=1))
+            self._show_td10_quality(rms_counts, metadata.channel_names)
         else:
             quality = signal_quality(self._analysis_data, metadata.channel_names)
             self._show_quality(quality, metadata.channel_names)
 
     def _show_quality(self, quality: QualityReport, names: tuple[str, ...]) -> None:
+        self.quality_plot.setLabel("left", "RMS", units="μV")
         rms = quality.rms_uv[:MAX_VISIBLE_CHANNELS]
         x = np.arange(len(rms))
         self.quality_bars.setOpts(x=x, height=rms, width=0.7)
@@ -888,6 +1014,14 @@ class NeuroScopeWindow(QMainWindow):
             f"整体质量：{quality.overall}　平直 {len(quality.flat_channels)}　"
             f"噪声 {len(quality.noisy_channels)}　疑似削顶 {len(quality.clipped_channels)}"
         )
+
+    def _show_td10_quality(self, rms_counts: np.ndarray, names: tuple[str, ...]) -> None:
+        rms = np.asarray(rms_counts, dtype=np.float32)[:MAX_VISIBLE_CHANNELS]
+        x = np.arange(len(rms))
+        self.quality_bars.setOpts(x=x, height=rms, width=0.7)
+        self.quality_plot.getAxis("bottom").setTicks([[(float(i), names[i]) for i in range(len(rms))]])
+        self.quality_plot.setLabel("left", "RMS（原始 ADC counts）")
+        self.quality_summary.setText("原始 ADC counts：未确认电压换算比例，不应用 μV 平直、噪声或削顶阈值。")
 
     def _event(self) -> EEGEvent:
         if self.stimulus_events:
@@ -917,6 +1051,14 @@ class NeuroScopeWindow(QMainWindow):
         if self.controller is None or self._analysis_data is None:
             return
         if self.tabs.currentIndex() != 3 and not self.stimulus_window.timer.isActive():
+            return
+        if self._is_td10():
+            self.decoder_name.setText("Decoder：TD10 原始数据保护")
+            self.decoder_result.setText("等待硬件比例与电极映射")
+            self.decoder_detail.setText(
+                "当前 LSL 协议仅提供 EEG1–EEG4 原始 ADC counts。确认微伏换算和实际电极位置后，才能启用范式解码。"
+            )
+            self.decoder_metrics.setRowCount(0)
             return
         analysis_data = self._analysis_data
         analysis_metadata = self._analysis_metadata or self.controller.source.metadata
@@ -1045,6 +1187,8 @@ class NeuroScopeWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._stop_session()
+        if self._td10_discovery_worker is not None and self._td10_discovery_worker.isRunning():
+            self._td10_discovery_worker.wait(2500)
         event.accept()
 
 

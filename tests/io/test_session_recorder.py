@@ -126,3 +126,48 @@ def test_bdf_labels_are_unique_and_keep_original_name_mapping(tmp_path: Path) ->
     assert len(labels) == len(set(labels)) == 2
     assert all(len(label) <= 16 for label in labels)
     assert session["channel_names"] == list(metadata.channel_names)
+
+
+def test_recorder_preserves_td10_signed_24_bit_adc_counts(tmp_path: Path) -> None:
+    metadata = SourceMetadata.eeg(
+        "ifet-td10-headset:eeg",
+        "td10_lsl",
+        125.0,
+        ("EEG1", "EEG2", "EEG3", "EEG4"),
+        unit="ADC counts",
+    )
+    recorder = SessionRecorder.start(
+        root_dir=tmp_path,
+        participant_id="S01",
+        paradigm="静息睁眼/闭眼",
+        preset="完整采集",
+        metadata=metadata,
+    )
+    data = np.zeros((4, 125), dtype=np.float32)
+    data[:, :4] = np.asarray(
+        [
+            [-8_388_608, -1, 0, 8_388_607],
+            [8_388_607, 0, -1, -8_388_608],
+            [1, 2, 3, 4],
+            [-4, -3, -2, -1],
+        ],
+        dtype=np.float32,
+    )
+    recorder.submit(
+        EEGChunk(
+            metadata=metadata,
+            data=data,
+            timestamps=np.arange(125, dtype=np.float64) / 125.0,
+            sequence=0,
+        )
+    )
+    recorder.stop(status="completed", reason="completed")
+
+    with pyedflib.EdfReader(str(recorder.final_path)) as reader:
+        assert reader.getPhysicalDimension(0) == "ADCcnt"
+        np.testing.assert_array_equal(reader.readSignal(0)[:4], data[0, :4])
+        np.testing.assert_array_equal(reader.readSignal(1)[:4], data[1, :4])
+
+    session = json.loads(recorder.session_path.read_text(encoding="utf-8"))
+    assert session["channel_units"] == ["ADC counts"] * 4
+    assert session["clipped_samples"] == 0
