@@ -6,7 +6,7 @@ NeuroScope 提供高刷新率桌面控制台、实时波形、频谱、信号质
 
 ## 已支持功能
 
-- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BCIGo SDK 1.0.2、test-头带（TD10 LSL EEG）
+- 数据源：模拟、NPZ 回放、博睿康 JellyFish 实时转发、强脑 BCIGo SDK 1.0.2、test-头带（TD10 LSL EEG/Quality/Markers）
 - SSVEP：滤波组谐波 CCA，直接输出候选刺激频率
 - 运动想象：C3/C4 的 µ/β 侧化趋势
 - 视觉任务：枕区视觉响应；独立记录图像类别、目标是否出现、是否报告看见
@@ -43,7 +43,7 @@ python3.12 -m venv .venv312
 
 情绪图片流程包含内容提示、20 秒中性基线，以及每张图片前 1 秒注视、6 秒图片和 1 秒空屏，不进行效价或唤醒评分。七个细分类为愉悦、厌恶、恐惧、鼓舞、中性、悲伤、温情，每类 15 张；完整采集在第 35 和第 70 张后休息。素材为公司自有素材，不标注为 IAPS。按 `S` 可以跳过当前图片。
 
-当前没有硬件 Trigger 时使用同机软件时间戳同步。界面中的“候选分离度”和“趋势分”不是模型准确率；SSVEP 只有完成带提示目标的试次后才显示本会话试次匹配率。
+当前刺激事件使用同机 LSL `local_clock()` 软件时间戳同步。它能消除用“已提交样本数”猜事件位置的问题，但不是显示器、音频或头环采样链路的物理 Trigger；界面中的“候选分离度”和“趋势分”不是模型准确率；SSVEP 只有完成带提示目标的试次后才显示本会话试次匹配率。
 
 听觉 ASSR 每轮使用 10 秒安静基线和 20 秒 1000 Hz 载波、40 Hz 100% 调幅音，快速/完整预设分别自动运行 3/10 轮。听觉 Oddball 使用 80% 标准音和 20% 偏差音，声音起始间隔为 1200–1600 ms，听到偏差音时按 `J`。两项听觉任务建议准备同一副舒适音量的有线双耳耳机。尚未校准设备时间戳与电脑音频/显示延迟时，Oddball 的 N1/MMN 类差异/靶音晚期正波以及 Stroop 的 N2 类趋势均只显示“ERP 时序待校准”，不输出确证数值。
 
@@ -92,9 +92,23 @@ BrainCo 实时页会显示累计样本、缓冲样本和最近数据时间。波
 
 test-头带只接入桌面控制台。先在 iFET 上位机开启 LSL，并保证发布端与 NeuroScope 电脑位于同一局域网；随后双击 `启动-NeuroScope桌面控制台.bat`，选择“test-头带”，点击“查找设备”，再从下拉框选择要连接的头带。多台头带会按来源 ID 分开显示，例如 `ifet-td10-subject-001` 和 `ifet-td10-subject-002`；程序连接时分别查找 `ifet-td10-subject-001:eeg` 和 `ifet-td10-subject-002:eeg`。局域网发现不可用时，也可以直接在下拉框中填写来源 ID。
 
-TD10 适配器要求 EEG 流为固定 4 通道、`int32`，标称采样率为 125、250、500 或 1000 Hz。实际采样率从 LSL `StreamInfo` 读取，通道固定为 `EEG1/EEG2/EEG3/EEG4`，每个 LSL chunk 的时间戳原样进入统一缓冲和记录链路。LSL 数值是有符号 24 位原始 ADC counts；在硬件团队确认参考电压、PGA 增益、模拟前端比例和实际电极位置之前，程序不换算微伏、不应用微伏质量阈值，也不执行范式解码。
+TD10 适配器要求 EEG 流为固定 4 通道、`int32`，标称采样率为 125、250、500 或 1000 Hz。实际采样率从 LSL `StreamInfo` 读取，通道固定为 `EEG1/EEG2/EEG3/EEG4`。EEG-only 仍可用于预览；“完整采集”要求同一来源 ID 的 `:eeg`、`:quality`、`:markers` 三流同时存在。Quality 固定保存 `Valid/DeviceSeq/DeviceFlag` 三列，包括 `Valid=0` 的行，绝不删除或压缩时间轴。LSL 数值是有符号 24 位原始 ADC counts；在硬件团队确认参考电压、PGA 增益、模拟前端比例和实际电极位置之前，程序不换算微伏、不应用微伏质量阈值，也不执行范式解码。
 
-完整采集写入 BDF 时，TD10 使用 `ADCcnt` 作为 BDF 的八字符物理维度，并让物理范围与有符号 24 位数字范围一致，从而保存原始计数值；`session.json` 仍完整记录单位 `ADC counts` 和 LSL 来源 ID。当前 NeuroScope 数据源契约只承载 EEG，因此本次桌面接入消费 `_EEG` 流；协议中的 `_AUX`、`_Quality` 和 `_Markers` 不会被删除或改写，但尚未合并进 NeuroScope 会话模型。需要严格判断物理采样与插值行时，应同步使用 LabRecorder 记录全部流为 XDF。
+完整采集写入 BDF 时，TD10 使用 `ADCcnt` 作为 BDF 的八字符物理维度，并让物理范围与有符号 24 位数字范围一致，从而保存原始计数值。会话目录还包含：
+
+- `lsl_timestamps.f64` / `lsl_timestamps_corrected.f64`：EEG 的 Outlet 原始时间和加上 `time_correction()` 后的 Inlet 本机 LSL 时间；
+- `quality_raw.i32`、`quality_timestamps.f64`、`quality_timestamps_corrected.f64`：原始 Quality 三列及两套时间；
+- `quality_aligned.i32`：按校正时间、半个 EEG 采样周期容差对齐到每个 EEG 样本的 Quality；未匹配行写为 `0,-1,-1`；
+- `ifet_markers.jsonl` / `neuroscope_markers.jsonl`：设备 Marker 原文和 NeuroScope 刺激 Marker；
+- `clock_corrections.jsonl`：各流定期测得的 LSL clock correction；
+- `events.csv`：以完整 EEG 校正时间轴最终重建的样本号、对齐误差和状态；
+- `session.json`：来源扩展信息、计数、Quality 统计和固定的 `lsl_software_sync_uncalibrated` 时序状态。
+
+这些 `.f64`/`.i32` 文件均为小端、逐行连续二进制。TD10 当前固件不提供硬件采样时刻；发布端只给 chunk 最后一个样本打 `local_clock()` 时间，LSL 会按标称采样率回填同 chunk 之前的样本。因此 clock correction 只能统一两台电脑的 LSL 时钟，无法恢复 BLE/设备内部延迟或显示/音频的物理起始时刻。正式实验建议同时用 LabRecorder 记录 XDF 做独立对照；ERP 仍需光电二极管、音频回环或已知报文的硬件 Trigger 实测校准后才能解锁。
+
+协议虽定义了 9 通道 `:aux` 流，但当前文件没有给出九列的名称、单位和语义，所以本轮不把 AUX 写成可能误导的数据结构。取得厂家字段表后再接入。
+
+现场网络记录值为采集电脑 A `192.168.3.22`、JellyFish `8712`、同步器 `192.168.3.3`。这些值不构成 TriggerBox 网络协议；在明确 TCP/UDP、端口、报文和应答格式前，NeuroScope 不会向同步器发送猜测报文。
 
 ## Streamlit 备用入口
 

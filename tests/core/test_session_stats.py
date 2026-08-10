@@ -135,3 +135,48 @@ def test_session_recorder_hook_receives_full_chunks_before_display_selection() -
     assert recorder.chunks
     assert recorder.chunks[0].metadata.channel_names == ("C3", "C4")
     assert recorder.chunks[0].data.shape[0] == 2
+
+
+class _SidecarSource(_StreamingSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sidecars = ["timing-1", "timing-2"]
+
+    def drain_sidecars(self) -> str | None:
+        return self.sidecars.pop(0) if self.sidecars else None
+
+
+class _SidecarRecorder(_CollectingRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sidecars: list[str] = []
+
+    def submit_sidecars(self, sidecars: str) -> None:
+        self.sidecars.append(sidecars)
+
+
+def test_session_forwards_optional_source_sidecars_once() -> None:
+    source = _SidecarSource()
+    recorder = _SidecarRecorder()
+    controller = SessionController(source)
+    controller.attach_recorder(recorder)
+    controller.start()
+    deadline = time.monotonic() + 1.0
+    while len(recorder.sidecars) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    controller.stop()
+
+    assert recorder.sidecars[:2] == ["timing-1", "timing-2"]
+    assert source.sidecars == []
+
+
+def test_session_drains_sidecars_without_recorder() -> None:
+    source = _SidecarSource()
+    controller = SessionController(source)
+    controller.start()
+    deadline = time.monotonic() + 1.0
+    while source.sidecars and time.monotonic() < deadline:
+        time.sleep(0.01)
+    controller.stop()
+
+    assert source.sidecars == []

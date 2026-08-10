@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from neuroscope_eeg.acquisition.td10_lsl import TD10Sidecars
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.desktop.protocols import PROTOCOL_VERSION, TIMING_STATUS, StimulusEvent
 
@@ -35,8 +36,12 @@ _PARADIGM_SLUGS = {
 _EVENT_FIELDS = (
     "monotonic_time",
     "wall_time",
+    "lsl_time",
     "eeg_session_sec",
     "eeg_sample_index",
+    "alignment_method",
+    "alignment_error_ms",
+    "alignment_status",
     "paradigm",
     "phase",
     "label",
@@ -110,6 +115,15 @@ class SessionRecorder:
         self.final_path = session_dir / "eeg.bdf"
         self.events_path = session_dir / "events.csv"
         self.session_path = session_dir / "session.json"
+        self.lsl_timestamps_path = session_dir / "lsl_timestamps.f64"
+        self.lsl_timestamps_corrected_path = session_dir / "lsl_timestamps_corrected.f64"
+        self.quality_raw_path = session_dir / "quality_raw.i32"
+        self.quality_timestamps_path = session_dir / "quality_timestamps.f64"
+        self.quality_timestamps_corrected_path = session_dir / "quality_timestamps_corrected.f64"
+        self.quality_aligned_path = session_dir / "quality_aligned.i32"
+        self.ifet_markers_path = session_dir / "ifet_markers.jsonl"
+        self.neuroscope_markers_path = session_dir / "neuroscope_markers.jsonl"
+        self.clock_corrections_path = session_dir / "clock_corrections.jsonl"
         self.participant_id = participant_id
         self.paradigm = paradigm
         self.preset = preset
@@ -125,11 +139,20 @@ class SessionRecorder:
         self._padded_samples = 0
         self._chunks_written = 0
         self._events_written = 0
+        self._event_rows: list[dict[str, Any]] = []
+        self._eeg_timing_samples = 0
+        self._quality_samples = 0
+        self._quality_invalid_samples = 0
+        self._ifet_markers_written = 0
+        self._neuroscope_markers_written = 0
+        self._clock_corrections_written = 0
+        self._clock_correction_values: dict[str, list[float]] = {}
+        self._timing_health: dict[str, Any] = {}
         self._submitted_samples = 0
         self._queued_samples = 0
         self._max_queue_depth = 0
         self._queue_capacity_samples = max(self.sfreq * 10, self.sfreq)
-        self._queue: Queue[np.ndarray | None] = Queue()
+        self._queue: Queue[np.ndarray | TD10Sidecars | None] = Queue()
         self._lock = threading.Lock()
         self._events_lock = threading.Lock()
         self._accepting = True
@@ -140,6 +163,18 @@ class SessionRecorder:
         self._events_writer = csv.DictWriter(self._events_handle, fieldnames=_EVENT_FIELDS)
         self._events_writer.writeheader()
         self._events_handle.flush()
+        self._sidecar_handles: dict[str, Any] = {}
+        if metadata.source_type == "td10_lsl":
+            self._sidecar_handles = {
+                "eeg_raw": self.lsl_timestamps_path.open("wb"),
+                "eeg_corrected": self.lsl_timestamps_corrected_path.open("wb"),
+                "quality_raw": self.quality_raw_path.open("wb"),
+                "quality_ts": self.quality_timestamps_path.open("wb"),
+                "quality_corrected": self.quality_timestamps_corrected_path.open("wb"),
+                "ifet_markers": self.ifet_markers_path.open("w", encoding="utf-8"),
+                "neuroscope_markers": self.neuroscope_markers_path.open("w", encoding="utf-8"),
+                "clock_corrections": self.clock_corrections_path.open("w", encoding="utf-8"),
+            }
 
         self._writer = pyedflib_module.EdfWriter(
             str(self.inprogress_path),
@@ -266,18 +301,33 @@ class SessionRecorder:
             self._max_queue_depth = max(self._max_queue_depth, self._queued_samples)
         self._queue.put_nowait(values)
 
+    def submit_sidecars(self, sidecars: TD10Sidecars) -> None:
+        if not isinstance(sidecars, TD10Sidecars) or sidecars.is_empty:
+            return
+        with self._lock:
+            if self.error:
+                raise RecordingError(self.error)
+            if not self._accepting:
+                raise RecordingError("记录器已停止接收数据")
+        self._queue.put_nowait(sidecars)
+
     def record_event(
         self,
         event: StimulusEvent,
         *,
         eeg_sample_index: int,
         eeg_session_sec: float,
+        lsl_time: float | None = None,
     ) -> None:
         row = event.as_dict()
         row.update(
             {
                 "eeg_session_sec": float(eeg_session_sec),
                 "eeg_sample_index": int(eeg_sample_index),
+                "lsl_time": "" if lsl_time is None else float(lsl_time),
+                "alignment_method": "pending" if lsl_time is not None else "sample_counter",
+                "alignment_error_ms": "",
+                "alignment_status": "pending" if lsl_time is not None else "legacy",
                 "is_practice": bool(event.payload.get("is_practice", False)),
                 "payload": json.dumps(row["payload"], ensure_ascii=False, separators=(",", ":")),
             }
@@ -292,6 +342,7 @@ class SessionRecorder:
                 self._set_error(f"写入事件失败：{exc}")
                 raise RecordingError(self.error or str(exc)) from exc
             self._events_written += 1
+            self._event_rows.append(dict(row))
 
     def stop(self, *, status: str, reason: str) -> None:
         with self._lock:
@@ -313,6 +364,13 @@ class SessionRecorder:
                 self._events_handle.close()
             except Exception as exc:
                 self._set_error(f"关闭事件文件失败：{exc}")
+        self._close_sidecars()
+        if not self.error and self.metadata.source_type == "td10_lsl" and self._submitted_samples:
+            try:
+                self._finalize_td10_sidecars()
+                self._realign_events()
+            except Exception as exc:
+                self._set_error(f"完成 TD10 时间轴失败：{exc}")
         self.ended_at = datetime.now(timezone.utc)
         final_status = "error" if self.error else status
         final_reason = "recording_error" if self.error else reason
@@ -332,6 +390,9 @@ class SessionRecorder:
                 item = self._queue.get()
                 if item is None:
                     break
+                if isinstance(item, TD10Sidecars):
+                    self._write_sidecars(item)
+                    continue
                 with self._lock:
                     self._queued_samples -= item.shape[1]
                     self._chunks_written += 1
@@ -347,6 +408,202 @@ class SessionRecorder:
                 self._padded_samples = self.sfreq - valid
         except Exception as exc:
             self._set_error(f"写入 BDF 失败：{exc}")
+
+    def _write_sidecars(self, sidecars: TD10Sidecars) -> None:
+        if not self._sidecar_handles:
+            return
+        for batch in sidecars.eeg_timing:
+            np.asarray(batch.raw_timestamps, dtype="<f8").tofile(self._sidecar_handles["eeg_raw"])
+            np.asarray(batch.corrected_timestamps, dtype="<f8").tofile(
+                self._sidecar_handles["eeg_corrected"]
+            )
+            self._eeg_timing_samples += len(batch.raw_timestamps)
+        for batch in sidecars.quality:
+            values = np.asarray(batch.values, dtype="<i4")
+            values.tofile(self._sidecar_handles["quality_raw"])
+            np.asarray(batch.raw_timestamps, dtype="<f8").tofile(self._sidecar_handles["quality_ts"])
+            np.asarray(batch.corrected_timestamps, dtype="<f8").tofile(
+                self._sidecar_handles["quality_corrected"]
+            )
+            self._quality_samples += len(values)
+            self._quality_invalid_samples += int(np.count_nonzero(values[:, 0] == 0))
+        for marker in sidecars.ifet_markers:
+            self._write_jsonl(
+                "ifet_markers",
+                {
+                    "value": marker.value,
+                    "raw_timestamp": marker.raw_timestamp,
+                    "corrected_timestamp": marker.corrected_timestamp,
+                    "time_correction": marker.time_correction,
+                },
+            )
+            self._ifet_markers_written += 1
+        for marker in sidecars.neuroscope_markers:
+            self._write_jsonl(
+                "neuroscope_markers",
+                {"payload": marker.payload, "lsl_timestamp": marker.lsl_timestamp},
+            )
+            self._neuroscope_markers_written += 1
+        for correction in sidecars.clock_corrections:
+            self._write_jsonl(
+                "clock_corrections",
+                {
+                    "stream": correction.stream,
+                    "measured_at": correction.measured_at,
+                    "correction_sec": correction.correction_sec,
+                },
+            )
+            self._clock_corrections_written += 1
+            self._clock_correction_values.setdefault(correction.stream, []).append(
+                correction.correction_sec
+            )
+
+    def _write_jsonl(self, handle_name: str, payload: dict[str, Any]) -> None:
+        self._sidecar_handles[handle_name].write(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        )
+
+    def _close_sidecars(self) -> None:
+        for handle in self._sidecar_handles.values():
+            try:
+                handle.flush()
+                handle.close()
+            except Exception as exc:
+                self._set_error(f"关闭 TD10 sidecar 失败：{exc}")
+
+    def _finalize_td10_sidecars(self) -> None:
+        if self._eeg_timing_samples != self._submitted_samples:
+            raise RecordingError(
+                f"EEG 时间戳数 {self._eeg_timing_samples} 与 EEG 样本数 {self._submitted_samples} 不一致"
+            )
+        eeg_timestamps = np.fromfile(self.lsl_timestamps_corrected_path, dtype="<f8")
+        if len(eeg_timestamps) != self._submitted_samples:
+            raise RecordingError("EEG 校正时间轴文件长度无效")
+        self._require_strictly_increasing(eeg_timestamps, "EEG")
+        eeg_intervals = np.diff(eeg_timestamps)
+        self._timing_health.update(
+            {
+                "eeg_effective_sfreq": (
+                    None
+                    if len(eeg_timestamps) < 2
+                    else (len(eeg_timestamps) - 1) / (eeg_timestamps[-1] - eeg_timestamps[0])
+                ),
+                "eeg_max_interval_sec": (
+                    None if not len(eeg_intervals) else float(np.max(eeg_intervals))
+                ),
+                "eeg_gap_count": int(np.count_nonzero(eeg_intervals > 1.5 / self.sfreq)),
+            }
+        )
+        quality_values = np.fromfile(self.quality_raw_path, dtype="<i4")
+        quality_timestamps = np.fromfile(self.quality_timestamps_corrected_path, dtype="<f8")
+        if quality_values.size != quality_timestamps.size * 3:
+            raise RecordingError("Quality 数值与时间戳数量不一致")
+        quality_values = quality_values.reshape(-1, 3)
+        if len(quality_timestamps):
+            self._require_strictly_increasing(quality_timestamps, "Quality")
+        aligned = np.tile(np.asarray([0, -1, -1], dtype="<i4"), (len(eeg_timestamps), 1))
+        if len(quality_timestamps):
+            nearest, errors = self._nearest_indices(eeg_timestamps, quality_timestamps)
+            matched = errors <= 0.5 / self.sfreq
+            aligned[matched] = quality_values[nearest[matched]]
+        else:
+            matched = np.zeros(len(eeg_timestamps), dtype=bool)
+        wraps, duplicates, gaps = self._device_sequence_health(quality_values[:, 1])
+        self._timing_health.update(
+            {
+                "quality_valid_ratio": (
+                    None
+                    if not len(quality_values)
+                    else float(np.count_nonzero(quality_values[:, 0])) / len(quality_values)
+                ),
+                "quality_aligned_samples": int(np.count_nonzero(matched)),
+                "quality_unmatched_samples": int(len(matched) - np.count_nonzero(matched)),
+                "device_seq_wraps": wraps,
+                "device_seq_duplicates": duplicates,
+                "device_seq_gaps": gaps,
+                "clock_correction_ranges_sec": {
+                    stream: {
+                        "min": min(values),
+                        "max": max(values),
+                        "latest": values[-1],
+                    }
+                    for stream, values in self._clock_correction_values.items()
+                },
+            }
+        )
+        temporary = self.quality_aligned_path.with_suffix(".i32.tmp")
+        aligned.tofile(temporary)
+        os.replace(temporary, self.quality_aligned_path)
+
+    def _realign_events(self) -> None:
+        if not self._event_rows:
+            return
+        eeg_timestamps = np.fromfile(self.lsl_timestamps_corrected_path, dtype="<f8")
+        tolerance = 0.5 / self.sfreq
+        for row in self._event_rows:
+            if row["lsl_time"] == "":
+                continue
+            target = float(row["lsl_time"])
+            nearest, errors = self._nearest_indices(np.asarray([target]), eeg_timestamps)
+            error = float(errors[0])
+            row["alignment_error_ms"] = error * 1000.0
+            if error <= tolerance:
+                index = int(nearest[0])
+                row["eeg_sample_index"] = index
+                row["eeg_session_sec"] = float(eeg_timestamps[index] - eeg_timestamps[0])
+                row["alignment_method"] = "nearest_lsl_timestamp"
+                row["alignment_status"] = "aligned"
+            else:
+                row["eeg_sample_index"] = -1
+                row["eeg_session_sec"] = ""
+                row["alignment_method"] = "nearest_lsl_timestamp"
+                row["alignment_status"] = "outside_tolerance"
+        temporary = self.events_path.with_suffix(".csv.tmp")
+        with temporary.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=_EVENT_FIELDS)
+            writer.writeheader()
+            writer.writerows(self._event_rows)
+        os.replace(temporary, self.events_path)
+
+    @staticmethod
+    def _nearest_indices(targets: np.ndarray, reference: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if reference.size == 0:
+            raise RecordingError("权威 LSL 时间轴为空")
+        right = np.searchsorted(reference, targets, side="left")
+        right = np.clip(right, 0, len(reference) - 1)
+        left = np.clip(right - 1, 0, len(reference) - 1)
+        choose_left = np.abs(targets - reference[left]) <= np.abs(reference[right] - targets)
+        nearest = np.where(choose_left, left, right)
+        return nearest, np.abs(reference[nearest] - targets)
+
+    @staticmethod
+    def _require_strictly_increasing(values: np.ndarray, label: str) -> None:
+        if not np.all(np.isfinite(values)) or np.any(np.diff(values) <= 0):
+            raise RecordingError(f"{label} 校正时间轴必须有限且严格递增")
+
+    @staticmethod
+    def _device_sequence_health(values: np.ndarray) -> tuple[int, int, int]:
+        wraps = duplicates = gaps = 0
+        if len(values) < 2:
+            return wraps, duplicates, gaps
+        previous: int | None = None
+        for value in values:
+            current = int(value)
+            if current == -1:
+                previous = None
+                continue
+            if previous is None:
+                previous = current
+                continue
+            delta = (current - previous) & 0xFF
+            if previous == 255 and current == 0:
+                wraps += 1
+            elif delta == 0:
+                duplicates += 1
+            elif delta > 1:
+                gaps += delta - 1
+            previous = current
+        return wraps, duplicates, gaps
 
     def _write_record(self, values: np.ndarray, *, valid_samples: int) -> None:
         cleaned = np.asarray(values, dtype=np.float64)
@@ -386,6 +643,7 @@ class SessionRecorder:
             "bdf_channel_labels": list(self.channel_labels),
             "channel_types": list(self.metadata.channel_types),
             "channel_units": list(self.metadata.channel_units),
+            "source_extra": dict(self.metadata.extra),
             "source_sample_offset": self.source_sample_offset,
             "started_at": self.started_at.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
@@ -398,7 +656,18 @@ class SessionRecorder:
             "nonfinite_samples": getattr(self, "_nonfinite_samples", 0),
             "clipped_samples": getattr(self, "_clipped_samples", 0),
             "max_queue_depth": self._max_queue_depth,
-            "timing_status": TIMING_STATUS,
+            "timing_status": (
+                "lsl_software_sync_uncalibrated"
+                if self.metadata.source_type == "td10_lsl"
+                else TIMING_STATUS
+            ),
+            "eeg_timing_samples": self._eeg_timing_samples,
+            "quality_samples": self._quality_samples,
+            "quality_invalid_samples": self._quality_invalid_samples,
+            "ifet_markers_written": self._ifet_markers_written,
+            "neuroscope_markers_written": self._neuroscope_markers_written,
+            "clock_corrections_written": self._clock_corrections_written,
+            "timing_health": self._timing_health,
             "neuroscope_version": _package_version(),
             "python_version": platform.python_version(),
             "error": self.error,

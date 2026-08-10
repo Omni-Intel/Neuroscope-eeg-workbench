@@ -1,9 +1,18 @@
+import csv
 import json
 from pathlib import Path
 
 import numpy as np
 import pyedflib
 
+from neuroscope_eeg.acquisition.td10_lsl import (
+    ClockCorrectionSample,
+    EEGTimingBatch,
+    LSLMarker,
+    NeuroScopeMarker,
+    QualityBatch,
+    TD10Sidecars,
+)
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.desktop.protocols import StimulusEvent
 from neuroscope_eeg.io.session_recorder import SessionRecorder
@@ -153,12 +162,13 @@ def test_recorder_preserves_td10_signed_24_bit_adc_counts(tmp_path: Path) -> Non
         ],
         dtype=np.float32,
     )
+    timestamps = np.arange(125, dtype=np.float64) / 125.0
     recorder.submit(
-        EEGChunk(
-            metadata=metadata,
-            data=data,
-            timestamps=np.arange(125, dtype=np.float64) / 125.0,
-            sequence=0,
+        EEGChunk(metadata=metadata, data=data, timestamps=timestamps, sequence=0)
+    )
+    recorder.submit_sidecars(
+        TD10Sidecars(
+            eeg_timing=(EEGTimingBatch(0, timestamps, timestamps, 0.0),),
         )
     )
     recorder.stop(status="completed", reason="completed")
@@ -171,3 +181,121 @@ def test_recorder_preserves_td10_signed_24_bit_adc_counts(tmp_path: Path) -> Non
     session = json.loads(recorder.session_path.read_text(encoding="utf-8"))
     assert session["channel_units"] == ["ADC counts"] * 4
     assert session["clipped_samples"] == 0
+
+
+def test_td10_recorder_persists_sidecars_and_aligns_quality_and_events(tmp_path: Path) -> None:
+    metadata = SourceMetadata.eeg(
+        "ifet-td10-headset:eeg",
+        "td10_lsl",
+        10.0,
+        ("EEG1", "EEG2", "EEG3", "EEG4"),
+        unit="ADC counts",
+    )
+    recorder = SessionRecorder.start(
+        root_dir=tmp_path,
+        participant_id="S01",
+        paradigm="听觉 Oddball",
+        preset="完整采集",
+        metadata=metadata,
+    )
+    corrected = np.asarray([100.0, 100.1, 100.2], dtype=np.float64)
+    recorder.submit(
+        EEGChunk(metadata, np.ones((4, 3), dtype=np.float32), corrected, sequence=0)
+    )
+    recorder.submit_sidecars(
+        TD10Sidecars(
+            eeg_timing=(
+                EEGTimingBatch(0, corrected - 0.01, corrected, 0.01),
+            ),
+            quality=(
+                QualityBatch(
+                    np.asarray([[1, 7, 3], [0, 8, 4], [1, 9, 5]], dtype=np.int32),
+                    corrected - 0.02,
+                    corrected,
+                    0.02,
+                ),
+            ),
+            ifet_markers=(LSLMarker("device", 99.9, 100.0, 0.1),),
+            neuroscope_markers=(NeuroScopeMarker('{"phase":"stimulus"}', 100.1),),
+            clock_corrections=(
+                ClockCorrectionSample("eeg", "2026-08-10T00:00:00+00:00", 0.01),
+            ),
+        )
+    )
+    recorder.record_event(
+        StimulusEvent(1.0, 2.0, "听觉 Oddball", "stimulus", "standard"),
+        eeg_sample_index=-1,
+        eeg_session_sec=-1.0,
+        lsl_time=100.1,
+    )
+    recorder.record_event(
+        StimulusEvent(1.1, 2.1, "听觉 Oddball", "stimulus", "late"),
+        eeg_sample_index=-1,
+        eeg_session_sec=-1.0,
+        lsl_time=100.26,
+    )
+    recorder.stop(status="completed", reason="completed")
+
+    np.testing.assert_array_equal(
+        np.fromfile(recorder.session_dir / "lsl_timestamps.f64", dtype="<f8"),
+        corrected - 0.01,
+    )
+    np.testing.assert_array_equal(
+        np.fromfile(recorder.session_dir / "lsl_timestamps_corrected.f64", dtype="<f8"),
+        corrected,
+    )
+    np.testing.assert_array_equal(
+        np.fromfile(recorder.session_dir / "quality_raw.i32", dtype="<i4").reshape(-1, 3),
+        [[1, 7, 3], [0, 8, 4], [1, 9, 5]],
+    )
+    np.testing.assert_array_equal(
+        np.fromfile(recorder.session_dir / "quality_aligned.i32", dtype="<i4").reshape(-1, 3),
+        [[1, 7, 3], [0, 8, 4], [1, 9, 5]],
+    )
+    assert '"value":"device"' in (recorder.session_dir / "ifet_markers.jsonl").read_text()
+    assert '"lsl_timestamp":100.1' in (
+        recorder.session_dir / "neuroscope_markers.jsonl"
+    ).read_text()
+    with recorder.events_path.open(encoding="utf-8-sig", newline="") as handle:
+        event_rows = list(csv.DictReader(handle))
+    assert event_rows[0]["eeg_sample_index"] == "1"
+    assert event_rows[0]["alignment_method"] == "nearest_lsl_timestamp"
+    assert event_rows[0]["alignment_status"] == "aligned"
+    assert event_rows[1]["eeg_sample_index"] == "-1"
+    assert event_rows[1]["alignment_status"] == "outside_tolerance"
+    session = json.loads(recorder.session_path.read_text(encoding="utf-8"))
+    assert session["source_extra"] == {}
+    assert session["timing_status"] == "lsl_software_sync_uncalibrated"
+    assert session["quality_invalid_samples"] == 1
+    assert session["timing_health"]["quality_valid_ratio"] == 2 / 3
+    assert session["timing_health"]["quality_unmatched_samples"] == 0
+
+
+def test_td10_recorder_rejects_nonmonotonic_authoritative_timeline(tmp_path: Path) -> None:
+    metadata = SourceMetadata.eeg(
+        "ifet-td10-headset:eeg",
+        "td10_lsl",
+        10.0,
+        ("EEG1", "EEG2", "EEG3", "EEG4"),
+        unit="ADC counts",
+    )
+    recorder = SessionRecorder.start(
+        root_dir=tmp_path,
+        participant_id="S02",
+        paradigm="静息睁眼/闭眼",
+        preset="完整采集",
+        metadata=metadata,
+    )
+    timestamps = np.asarray([10.0, 9.9], dtype=np.float64)
+    recorder.submit(EEGChunk(metadata, np.ones((4, 2)), timestamps, sequence=0))
+    recorder.submit_sidecars(
+        TD10Sidecars(eeg_timing=(EEGTimingBatch(0, timestamps, timestamps, 0.0),))
+    )
+
+    recorder.stop(status="completed", reason="completed")
+
+    session = json.loads(recorder.session_path.read_text(encoding="utf-8"))
+    assert session["status"] == "error"
+    assert "严格递增" in session["error"]
+    assert recorder.inprogress_path.exists()
+    assert not recorder.final_path.exists()

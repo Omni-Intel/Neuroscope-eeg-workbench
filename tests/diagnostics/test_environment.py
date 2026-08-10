@@ -7,3 +7,4 @@ def test_environment_report_contains_package_status() -> None:
     assert "packages" in report
     assert "bcigo_sdk" in report["packages"]
     assert "pylsl" in report["packages"]
+    assert "importable" in report["pylsl_runtime"]

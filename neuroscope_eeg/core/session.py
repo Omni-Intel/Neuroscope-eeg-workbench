@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Protocol
+from typing import Any, Protocol
 
 from neuroscope_eeg.acquisition.base import EEGSource
 from neuroscope_eeg.core.buffer import RollingBuffer
@@ -11,6 +11,14 @@ from neuroscope_eeg.core.models import ConnectionState, EEGChunk
 
 class ChunkRecorder(Protocol):
     def submit(self, chunk: EEGChunk) -> None: ...
+
+
+class SidecarSource(Protocol):
+    def drain_sidecars(self) -> Any: ...
+
+
+class SidecarRecorder(Protocol):
+    def submit_sidecars(self, sidecars: Any) -> None: ...
 
 
 class SessionController:
@@ -47,10 +55,15 @@ class SessionController:
             self.state = ConnectionState.RUNNING
             while not self._stop.is_set():
                 chunk: EEGChunk = self.source.read_chunk()
-                if chunk.n_samples > 0:
-                    with self._recorder_lock:
+                drain_sidecars = getattr(self.source, "drain_sidecars", None)
+                sidecars = drain_sidecars() if callable(drain_sidecars) else None
+                with self._recorder_lock:
+                    if chunk.n_samples > 0:
                         if self._recorder is not None:
                             self._recorder.submit(chunk)
+                    submit_sidecars = getattr(self._recorder, "submit_sidecars", None)
+                    if sidecars is not None and callable(submit_sidecars):
+                        submit_sidecars(sidecars)
                 self.buffer.append(chunk)
                 if chunk.n_samples > 0:
                     self.chunks_received += 1

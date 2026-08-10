@@ -39,6 +39,7 @@ from neuroscope_eeg.acquisition.td10_lsl import (
     DEFAULT_TD10_BASE_SOURCE_ID,
     TD10LSLDevice,
     TD10LSLSource,
+    TD10Sidecars,
     discover_td10_devices,
 )
 from neuroscope_eeg.analysis.quality import QualityReport, signal_quality
@@ -568,6 +569,17 @@ class NeuroScopeWindow(QMainWindow):
         if self.stimulus_window.timer.isActive():
             QMessageBox.information(self, "范式正在运行", "请先停止当前范式，再启动下一次记录。")
             return
+        td10_source = self.controller.source if isinstance(self.controller.source, TD10LSLSource) else None
+        if (
+            td10_source is not None
+            and self.protocol_preset.currentText() == "完整采集"
+            and not td10_source.companions_ready
+        ):
+            missing = "、".join(td10_source.missing_companion_streams)
+            message = f"TD10 完整采集需要 EEG、Quality、Markers 三流；当前缺少：{missing}。"
+            QMessageBox.warning(self, "TD10 companion 未就绪", message)
+            self.stimulus_status.setText(f"未启动｜{message}")
+            return
         self.stimulus_events.clear()
         self._protocol_reference_metrics.clear()
         self._ssvep_checked_trials.clear()
@@ -593,11 +605,26 @@ class NeuroScopeWindow(QMainWindow):
                 QMessageBox.critical(self, "无法开始完整记录", str(exc))
                 self.stimulus_status.setText(f"未启动｜{exc}")
                 return
+        if td10_source is not None:
+            session_id = (
+                self._session_recorder.session_dir.name
+                if self._session_recorder is not None
+                else f"preview-{time.time_ns()}"
+            )
+            try:
+                td10_source.start_marker_outlet(session_id)
+            except RuntimeError as exc:
+                self._finish_session_recording(status="error", reason="marker_outlet_failed")
+                QMessageBox.critical(self, "无法启动 LSL Marker", str(exc))
+                self.stimulus_status.setText(f"未启动｜{exc}")
+                return
         try:
             self.stimulus_window.start_protocol(
                 self.paradigm_select.currentText(), screen, self.protocol_preset.currentText()
             )
         except (AudioUnavailableError, ValueError) as exc:
+            if td10_source is not None:
+                td10_source.stop_marker_outlet()
             self._finish_session_recording(status="error", reason="stimulus_start_failed")
             QMessageBox.warning(self, "范式无法启动", str(exc))
             self.stimulus_status.setText(f"未启动｜{exc}")
@@ -624,6 +651,8 @@ class NeuroScopeWindow(QMainWindow):
             status = "error"
             reason = "recording_error"
         session_dir = self._finish_session_recording(status=status, reason=reason)
+        if self.controller is not None and isinstance(self.controller.source, TD10LSLSource):
+            self.controller.source.stop_marker_outlet()
         summary = self.stimulus_window.summary()
         hit_rate = summary.get("behavior_accuracy", summary["behavior_hit_rate"])
         hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
@@ -635,6 +664,26 @@ class NeuroScopeWindow(QMainWindow):
         )
 
     def _on_stimulus_event(self, event: StimulusEvent) -> None:
+        lsl_time: float | None = None
+        if self.controller is not None and isinstance(self.controller.source, TD10LSLSource):
+            marker_payload = event.as_dict()
+            marker_payload["schema_version"] = 1
+            marker_payload["timing_status"] = "lsl_software_sync_uncalibrated"
+            try:
+                marker = self.controller.source.publish_marker(
+                    marker_payload,
+                    retain_sidecar=self._session_recorder is None,
+                )
+                lsl_time = marker.lsl_timestamp
+                if self._session_recorder is not None:
+                    self._session_recorder.submit_sidecars(
+                        TD10Sidecars(neuroscope_markers=(marker,))
+                    )
+            except (RuntimeError, RecordingError) as exc:
+                self.stimulus_status.setText(f"Marker 保存失败｜{exc}")
+                if event.phase != "stop" and self.stimulus_window.timer.isActive():
+                    QTimer.singleShot(0, lambda: self.stimulus_window.stop_protocol("recording_error"))
+                return
         if self.controller is not None:
             event.payload.setdefault("source_sample_index", self.controller.samples_received)
             if self._session_recorder is not None:
@@ -649,8 +698,9 @@ class NeuroScopeWindow(QMainWindow):
             try:
                 self._session_recorder.record_event(
                     event,
-                    eeg_sample_index=sample_index,
-                    eeg_session_sec=sample_index / self._session_recorder.sfreq,
+                    eeg_sample_index=-1 if lsl_time is not None else sample_index,
+                    eeg_session_sec=-1.0 if lsl_time is not None else sample_index / self._session_recorder.sfreq,
+                    lsl_time=lsl_time,
                 )
             except RecordingError as exc:
                 self.stimulus_status.setText(f"保存失败｜{exc}")
@@ -891,6 +941,8 @@ class NeuroScopeWindow(QMainWindow):
         self.analysis_timer.stop()
         self.decoder_timer.stop()
         if self.controller is not None:
+            if isinstance(self.controller.source, TD10LSLSource):
+                self.controller.source.stop_marker_outlet()
             self.controller.stop()
         self.controller = None
         self._analysis_data = None
@@ -1172,7 +1224,18 @@ class NeuroScopeWindow(QMainWindow):
         self.fps_value.setText(f"目标 {target} / 实际 {actual:.1f} FPS")
         age = self.controller.last_data_age_sec()
         buffered = self.controller.buffer.sample_count()
-        self.data_value.setText("尚未收到" if age is None else f"{age:.2f}s 前｜缓冲 {buffered}")
+        data_status = "尚未收到" if age is None else f"{age:.2f}s 前｜缓冲 {buffered}"
+        if isinstance(self.controller.source, TD10LSLSource):
+            stats = self.controller.source.timing_stats
+            valid_ratio = stats["quality_valid_ratio"]
+            valid_text = "—" if valid_ratio is None else f"{float(valid_ratio):.1%}"
+            companions = (
+                "三流就绪"
+                if self.controller.source.companions_ready
+                else f"缺 {','.join(self.controller.source.missing_companion_streams)}"
+            )
+            data_status += f"｜Quality {valid_text}｜{companions}"
+        self.data_value.setText(data_status)
         warmed_up = self._run_started_at is not None and time.monotonic() - self._run_started_at > 1.5
         level = fps_level(actual, target) if warmed_up else "good"
         colors = {"good": "#22c55e", "warning": "#f59e0b", "critical": "#ef4444"}
