@@ -17,7 +17,7 @@ if not defined NEUROSCOPE_PYTHON (
   exit /b 1
 )
 
-"%NEUROSCOPE_PYTHON%" -c "import PySide6, pyqtgraph, pyedflib, numpy, scipy" >nul 2>&1
+"%NEUROSCOPE_PYTHON%" -c "import PySide6, pyqtgraph, pyedflib, pylsl, numpy, scipy" >nul 2>&1
 if errorlevel 1 (
   echo Desktop dependencies are missing.
   echo Run: "%NEUROSCOPE_PYTHON%" -m pip install -r requirements-desktop.txt

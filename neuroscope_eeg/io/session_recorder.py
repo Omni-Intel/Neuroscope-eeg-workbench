@@ -44,6 +44,25 @@ _EVENT_FIELDS = (
     "payload",
 )
 
+_BDF_DIGITAL_MIN = -8_388_608
+_BDF_DIGITAL_MAX = 8_388_607
+_DEFAULT_PHYSICAL_MIN = -262_144.0
+_DEFAULT_PHYSICAL_MAX = 262_143.0
+
+
+def _is_adc_counts(unit: str) -> bool:
+    return unit.strip().casefold() in {"adc count", "adc counts", "counts"}
+
+
+def _bdf_dimension(unit: str) -> str:
+    return "ADCcnt" if _is_adc_counts(unit) else unit
+
+
+def _physical_limits(unit: str) -> tuple[float, float]:
+    if _is_adc_counts(unit):
+        return _BDF_DIGITAL_MIN, _BDF_DIGITAL_MAX
+    return _DEFAULT_PHYSICAL_MIN, _DEFAULT_PHYSICAL_MAX
+
 
 class RecordingError(RuntimeError):
     pass
@@ -98,6 +117,7 @@ class SessionRecorder:
         self.source_sample_offset = int(source_sample_offset)
         self.sfreq = int(round(metadata.sfreq))
         self.channel_labels = _bdf_labels(metadata.channel_names)
+        self._physical_ranges = tuple(_physical_limits(unit) for unit in metadata.channel_units)
         self.started_at = datetime.now(timezone.utc)
         self.ended_at: datetime | None = None
         self.error: str | None = None
@@ -133,16 +153,20 @@ class SessionRecorder:
             [
                 {
                     "label": label,
-                    "dimension": unit,
+                    "dimension": _bdf_dimension(unit),
                     "sample_frequency": self.sfreq,
-                    "physical_min": -262144,
-                    "physical_max": 262143,
-                    "digital_min": -8388608,
-                    "digital_max": 8388607,
+                    "physical_min": physical_min,
+                    "physical_max": physical_max,
+                    "digital_min": _BDF_DIGITAL_MIN,
+                    "digital_max": _BDF_DIGITAL_MAX,
                     "transducer": "",
                     "prefilter": "",
                 }
-                for label, unit in zip(self.channel_labels, metadata.channel_units)
+                for label, unit, (physical_min, physical_max) in zip(
+                    self.channel_labels,
+                    metadata.channel_units,
+                    self._physical_ranges,
+                )
             ]
         )
         self._write_session_json("recording", "")
@@ -331,9 +355,11 @@ class SessionRecorder:
         if nonfinite_count:
             cleaned = cleaned.copy()
             cleaned[nonfinite] = 0.0
-        clipped_count = int(((cleaned < -262144.0) | (cleaned > 262143.0)).sum())
+        physical_min = np.asarray([limits[0] for limits in self._physical_ranges], dtype=np.float64)[:, None]
+        physical_max = np.asarray([limits[1] for limits in self._physical_ranges], dtype=np.float64)[:, None]
+        clipped_count = int(((cleaned < physical_min) | (cleaned > physical_max)).sum())
         if clipped_count:
-            cleaned = np.clip(cleaned, -262144.0, 262143.0)
+            cleaned = np.minimum(np.maximum(cleaned, physical_min), physical_max)
         self._writer.writeSamples([np.ascontiguousarray(channel) for channel in cleaned])
         with self._lock:
             self._valid_samples += int(valid_samples)
