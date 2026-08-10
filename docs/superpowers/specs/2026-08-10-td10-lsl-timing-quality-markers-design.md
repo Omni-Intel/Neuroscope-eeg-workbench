@@ -30,7 +30,7 @@ LSL 无法恢复 TD10 固件没有发送的设备硬件采样时刻，也无法�
 - 恢复设备未提供的逐样本硬件时间戳；
 - 宣称 BLE/LSL 软件同步达到硬件 Trigger 精度；
 - 开放 TD10 的 ERP、诊断或医疗结论；
-- 接入 AUX 流的生理算法；AUX 可在后续独立设计中加入；
+- 接入 AUX 流的生理算法。当前协议只给出 AUX 的通道数，没有提供九个通道的顺序、标签、单位和数值语义，因此本次不能安全解释或入库；硬件团队补齐这些字段后再独立设计；
 - 博睿康网络同步器 `192.168.3.3` 的接入。其协议、端口和报文格式尚未提供，属于独立工作流。
 
 ## 3. 合并策略
@@ -131,6 +131,7 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 - `timestamp_max_gap_ms`
 - `effective_sample_rate_hz`
 - `quality_samples_written`
+- `quality_aligned_samples_written`
 - `quality_valid_samples`
 - `quality_invalid_samples`
 - `device_sequence_anomalies`
@@ -149,7 +150,9 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 ├── events.csv
 ├── session.json
 ├── lsl_timestamps.f64
-├── quality.i32
+├── quality_raw.i32
+├── quality_timestamps.f64
+├── quality_aligned.i32
 ├── ifet_markers.jsonl
 ├── neuroscope_markers.jsonl
 └── clock_corrections.jsonl
@@ -163,13 +166,14 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 - `session.json` 记录 dtype、字节序、数量和文件名；
 - EEG 和时间戳写入数量不一致时，会话进入 error，不能静默完成。
 
-### 6.2 `quality.i32`
+### 6.2 Quality 原始与对齐文件
 
-- little-endian int32；
-- 行主序，每行依次为 `Valid/DeviceSeq/DeviceFlag`；
-- 尽可能按校正后的 LSL 时间戳匹配到 EEG 行；
-- 未匹配行使用 `Valid=0, DeviceSeq=-1, DeviceFlag=-1`，并累计不匹配数量；
-- 原始 Quality 时间戳统计保存在 `session.json`，不通过删除 EEG 行来强行对齐。
+- `quality_raw.i32` 使用 little-endian int32 行主序，每行依次为 `Valid/DeviceSeq/DeviceFlag`；
+- `quality_timestamps.f64` 使用 little-endian float64，一个时间戳对应一行 `quality_raw.i32`；
+- 原始 Quality 行数与原始 Quality 时间戳数不一致时，会话进入 error；
+- `quality_aligned.i32` 与有效 EEG 样本逐行对应，使用校正后的 LSL 时间戳进行最近邻匹配；
+- 匹配容差固定为半个 EEG 标称采样周期；超过容差的 EEG 行写入 `Valid=0, DeviceSeq=-1, DeviceFlag=-1`，并累计不匹配数量；
+- 原始 Quality 行和时间戳始终保留，不通过删除 EEG 或 Quality 行来强行对齐。
 
 ### 6.3 Marker JSONL
 
@@ -199,7 +203,7 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 - `pylsl.local_clock()`；
 - NeuroScope Marker JSON。
 
-完整采集结束、所有 EEG 时间戳写入完成后，以校正后的事件 LSL 时间在完整 EEG 时间轴中查找最近样本，生成权威 `eeg_sample_index` 和 `eeg_session_sec`。同时保留：
+完整采集结束、所有 EEG 时间戳写入完成后，以校正后的事件 LSL 时间在完整 EEG 时间轴中查找最近样本，生成权威 `eeg_sample_index` 和 `eeg_session_sec`。记录器通过临时文件原子重写 `events.csv`，避免收尾中断留下半写文件。同时保留：
 
 - `alignment_error_ms`
 - `alignment_method=nearest_corrected_lsl_timestamp`
@@ -250,7 +254,8 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 - NeuroScope Marker 使用 LSL 时钟并包含稳定字段；
 - clock correction 原始记录可追溯；
 - 事件依据完整时间轴映射，边界和超容差事件正确拒绝；
-- BDF 有效样本数、timestamp 数和 Quality 行数一致；
+- BDF 有效样本数、EEG timestamp 数和 `quality_aligned.i32` 行数一致；
+- Quality 原始行数与 Quality timestamp 数一致；
 - 非 TD10 数据源回归行为不变。
 
 ### 10.2 LSL 集成测试
@@ -280,7 +285,7 @@ iFET Marker 的字符串格式尚未在协议中定义，因此输入 Marker 作
 
 - 原实验性 TD10 EEG 单流功能完整保留；
 - 完整采集必须同时具备 EEG、Quality 和 Markers；
-- 每个有效 EEG 样本都有持久化的 LSL 时间戳和质量行；
+- 每个有效 EEG 样本都有持久化的 LSL 时间戳和对齐质量行，原始 Quality 行及其时间戳也完整保留；
 - NeuroScope 刺激事件使用 LSL 时钟并能依据完整时间轴映射到 EEG；
 - 原始、校正和审计时间信息均可追溯；
 - 缺失、断流、非单调、对齐失败和写盘错误不会被静默隐藏；
