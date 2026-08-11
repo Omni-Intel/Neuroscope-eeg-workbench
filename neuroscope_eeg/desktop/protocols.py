@@ -12,27 +12,35 @@ class ProtocolPreset:
     rest_duration_sec: int
     rest_repetitions: int
     assr_cycles: int
-    nback_trials: int
-    nback_targets: int
+    nback_blocks_per_level: int
+    nback_trials_per_block: int
+    nback_targets_per_block: int
     stroop_trials: int
     oddball_trials: int
     emotion_per_category: int
 
+    @property
+    def nback_trials(self) -> int:
+        return len(NBACK_LEVELS) * self.nback_blocks_per_level * self.nback_trials_per_block
+
+    @property
+    def nback_targets(self) -> int:
+        return len(NBACK_LEVELS) * self.nback_blocks_per_level * self.nback_targets_per_block
+
 
 PRESETS: dict[str, ProtocolPreset] = {
-    "快速演示": ProtocolPreset("快速演示", 30, 1, 3, 30, 8, 30, 100, 3),
-    "完整采集": ProtocolPreset("完整采集", 60, 2, 10, 120, 40, 120, 300, 15),
+    "快速演示": ProtocolPreset("快速演示", 30, 1, 3, 1, 10, 3, 30, 100, 3),
+    "完整采集": ProtocolPreset("完整采集", 60, 2, 10, 4, 40, 13, 120, 300, 15),
 }
 
-PROTOCOL_VERSION = "2026.08.07"
+PROTOCOL_VERSION = "2026.08.11"
 TIMING_STATUS = "software_sync_uncalibrated"
 NBACK_STIMULUS_DURATION_SEC = 1.5
-NBACK_FORMAL_READY_DURATION_SEC = 2.0
+NBACK_BLANK_DURATION_SEC = 0.5
+NBACK_RULE_DURATION_SEC = 5.0
+NBACK_BLOCK_REST_DURATION_SEC = 25.0
 NBACK_RESPONSE_WINDOW_MS = NBACK_STIMULUS_DURATION_SEC * 1000.0
-
-
-def nback_item_duration(symbol: str) -> float:
-    return NBACK_FORMAL_READY_DURATION_SEC if symbol == "正式开始" else NBACK_STIMULUS_DURATION_SEC
+NBACK_LEVELS = (0, 1, 2)
 
 
 def nback_response_is_open(response_time_ms: float) -> bool:
@@ -43,8 +51,34 @@ def nback_response_is_open(response_time_ms: float) -> bool:
 class NBackTrial:
     trial_index: int
     symbol: str
-    two_back_symbol: str
+    comparison_symbol: str
     is_target: bool
+    nback_level: int
+
+
+@dataclass(frozen=True, slots=True)
+class NBackBlock:
+    block_index: int
+    load_block_index: int
+    nback_level: int
+    target_symbol: str | None
+    sequence_seed: int
+    trials: tuple[NBackTrial, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NBackScheduleItem:
+    kind: str
+    duration_sec: float
+    label: str
+    is_practice: bool
+    nback_level: int
+    block_index: int = -1
+    load_block_index: int = -1
+    formal_trial_index: int = -1
+    target_symbol: str | None = None
+    sequence_seed: int = -1
+    trial: NBackTrial | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,23 +100,246 @@ def _nonadjacent_positions(total: int, count: int, rng: random.Random) -> set[in
     return {position + offset for offset, position in enumerate(compressed)}
 
 
-def generate_nback_trials(trials: int, targets: int, *, seed: int = 17) -> tuple[NBackTrial, ...]:
+def generate_nback_trials(
+    trials: int,
+    targets: int,
+    *,
+    nback_level: int = 2,
+    target_symbol: str | None = None,
+    seed: int = 17,
+) -> tuple[NBackTrial, ...]:
     if trials <= 0:
         raise ValueError("trials must be positive")
+    if nback_level not in NBACK_LEVELS:
+        raise ValueError("nback_level must be 0, 1, or 2")
     rng = random.Random(seed)
     target_positions = _nonadjacent_positions(trials, targets, rng)
-    history = [str(rng.randrange(10)), str(rng.randrange(10))]
+    if nback_level == 0:
+        comparison_target = target_symbol if target_symbol is not None else str(rng.randrange(10))
+        if comparison_target not in tuple(str(value) for value in range(10)):
+            raise ValueError("target_symbol must be a digit from 0 to 9")
+        history: list[str] = []
+    else:
+        comparison_target = ""
+        history = [str(rng.randrange(10)) for _ in range(nback_level)]
     result: list[NBackTrial] = []
     for trial_index in range(trials):
-        two_back = history[trial_index]
+        comparison = comparison_target if nback_level == 0 else history[trial_index]
         if trial_index in target_positions:
-            symbol = two_back
+            symbol = comparison
         else:
-            choices = [str(value) for value in range(10) if str(value) != two_back]
+            choices = [str(value) for value in range(10) if str(value) != comparison]
             symbol = rng.choice(choices)
-        history.append(symbol)
-        result.append(NBackTrial(trial_index, symbol, two_back, trial_index in target_positions))
+        if nback_level:
+            history.append(symbol)
+        result.append(
+            NBackTrial(trial_index, symbol, comparison, trial_index in target_positions, nback_level)
+        )
     return tuple(result)
+
+
+def generate_nback_blocks(
+    blocks_per_level: int,
+    trials_per_block: int,
+    targets_per_block: int,
+    *,
+    seed: int = 17,
+) -> tuple[NBackBlock, ...]:
+    if blocks_per_level <= 0:
+        raise ValueError("blocks_per_level must be positive")
+    blocks: list[NBackBlock] = []
+    for load_block_index in range(blocks_per_level):
+        for nback_level in NBACK_LEVELS:
+            block_index = len(blocks)
+            sequence_seed = seed + block_index * 1009
+            target_symbol = (
+                str(random.Random(sequence_seed).randrange(10)) if nback_level == 0 else None
+            )
+            blocks.append(
+                NBackBlock(
+                    block_index=block_index,
+                    load_block_index=load_block_index,
+                    nback_level=nback_level,
+                    target_symbol=target_symbol,
+                    sequence_seed=sequence_seed,
+                    trials=generate_nback_trials(
+                        trials_per_block,
+                        targets_per_block,
+                        nback_level=nback_level,
+                        target_symbol=target_symbol,
+                        seed=sequence_seed,
+                    ),
+                )
+            )
+    return tuple(blocks)
+
+
+def _nback_sequence_items(
+    trials: tuple[NBackTrial, ...],
+    *,
+    is_practice: bool,
+    nback_level: int,
+    block_index: int,
+    load_block_index: int,
+    target_symbol: str | None,
+    sequence_seed: int,
+    formal_trial_start: int,
+) -> list[NBackScheduleItem]:
+    items: list[NBackScheduleItem] = []
+    context = tuple(trial.comparison_symbol for trial in trials[:nback_level])
+    for symbol in context:
+        items.append(
+            NBackScheduleItem(
+                "context",
+                NBACK_STIMULUS_DURATION_SEC,
+                symbol,
+                is_practice,
+                nback_level,
+                block_index,
+                load_block_index,
+                target_symbol=target_symbol,
+                sequence_seed=sequence_seed,
+            )
+        )
+        items.append(
+            NBackScheduleItem(
+                "blank",
+                NBACK_BLANK_DURATION_SEC,
+                "",
+                is_practice,
+                nback_level,
+                block_index,
+                load_block_index,
+                target_symbol=target_symbol,
+                sequence_seed=sequence_seed,
+            )
+        )
+    for trial in trials:
+        formal_trial_index = -1 if is_practice else formal_trial_start + trial.trial_index
+        items.append(
+            NBackScheduleItem(
+                "trial",
+                NBACK_STIMULUS_DURATION_SEC,
+                trial.symbol,
+                is_practice,
+                nback_level,
+                block_index,
+                load_block_index,
+                formal_trial_index,
+                target_symbol,
+                sequence_seed,
+                trial,
+            )
+        )
+        items.append(
+            NBackScheduleItem(
+                "blank",
+                NBACK_BLANK_DURATION_SEC,
+                "",
+                is_practice,
+                nback_level,
+                block_index,
+                load_block_index,
+                formal_trial_index,
+                target_symbol,
+                sequence_seed,
+                trial,
+            )
+        )
+    return items
+
+
+def generate_nback_schedule(preset: ProtocolPreset) -> tuple[NBackScheduleItem, ...]:
+    items: list[NBackScheduleItem] = []
+    practice_targets = 3
+    for nback_level in NBACK_LEVELS:
+        sequence_seed = 11 + nback_level
+        target_symbol = str(random.Random(sequence_seed).randrange(10)) if nback_level == 0 else None
+        trials = generate_nback_trials(
+            10,
+            practice_targets,
+            nback_level=nback_level,
+            target_symbol=target_symbol,
+            seed=sequence_seed,
+        )
+        rule = f"{nback_level}-back"
+        if target_symbol is not None:
+            rule += f"｜目标数字 {target_symbol}"
+        items.append(
+            NBackScheduleItem(
+                "rule",
+                NBACK_RULE_DURATION_SEC,
+                rule,
+                True,
+                nback_level,
+                target_symbol=target_symbol,
+                sequence_seed=sequence_seed,
+            )
+        )
+        items.extend(
+            _nback_sequence_items(
+                trials,
+                is_practice=True,
+                nback_level=nback_level,
+                block_index=-1,
+                load_block_index=-1,
+                target_symbol=target_symbol,
+                sequence_seed=sequence_seed,
+                formal_trial_start=-1,
+            )
+        )
+
+    blocks = generate_nback_blocks(
+        preset.nback_blocks_per_level,
+        preset.nback_trials_per_block,
+        preset.nback_targets_per_block,
+    )
+    formal_trial_start = 0
+    for block in blocks:
+        rule = f"{block.nback_level}-back"
+        if block.target_symbol is not None:
+            rule += f"｜目标数字 {block.target_symbol}"
+        items.append(
+            NBackScheduleItem(
+                "rule",
+                NBACK_RULE_DURATION_SEC,
+                rule,
+                False,
+                block.nback_level,
+                block.block_index,
+                block.load_block_index,
+                target_symbol=block.target_symbol,
+                sequence_seed=block.sequence_seed,
+            )
+        )
+        items.extend(
+            _nback_sequence_items(
+                block.trials,
+                is_practice=False,
+                nback_level=block.nback_level,
+                block_index=block.block_index,
+                load_block_index=block.load_block_index,
+                target_symbol=block.target_symbol,
+                sequence_seed=block.sequence_seed,
+                formal_trial_start=formal_trial_start,
+            )
+        )
+        formal_trial_start += len(block.trials)
+        if block.block_index < len(blocks) - 1:
+            items.append(
+                NBackScheduleItem(
+                    "rest",
+                    NBACK_BLOCK_REST_DURATION_SEC,
+                    "休息",
+                    False,
+                    block.nback_level,
+                    block.block_index,
+                    block.load_block_index,
+                    target_symbol=block.target_symbol,
+                    sequence_seed=block.sequence_seed,
+                )
+            )
+    return tuple(items)
 
 
 def generate_stroop_trials(trials: int, *, seed: int = 17) -> tuple[StroopTrial, ...]:

@@ -54,7 +54,7 @@ PARADIGMS: dict[str, Paradigm] = {
     "视觉图像识别": Paradigm("visual_awareness", "视觉图像识别"),
     "注意力": Paradigm("attention", "注意力"),
     "静息睁眼/闭眼": Paradigm("resting_eyes", "静息睁眼/闭眼"),
-    "2-back 工作记忆": Paradigm("working_memory_2back", "2-back 工作记忆"),
+    "N-back 工作记忆": Paradigm("working_memory_nback", "N-back 工作记忆"),
     "Stroop 色词冲突": Paradigm("stroop", "Stroop 色词冲突"),
     "情绪图片唤醒": Paradigm("emotion_arousal", "情绪图片唤醒"),
     "听觉 ASSR": Paradigm("auditory_assr", "听觉 ASSR"),

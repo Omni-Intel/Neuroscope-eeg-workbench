@@ -265,7 +265,7 @@ class RestingStateBaselineDecoder:
 
 
 class NBackBaselineDecoder:
-    name = "2-back 前额 theta 与行为"
+    name = "N-back 三负荷前额频带与行为"
 
     def decode(self, metadata: SourceMetadata, data: np.ndarray, event: EEGEvent | None = None) -> DecoderResult:
         left = _indices(metadata.channel_names, ("Fp1",))
@@ -276,7 +276,7 @@ class NBackBaselineDecoder:
             return DecoderResult(
                 value="尚未解码",
                 confidence=0.0,
-                detail="2-back 前额 theta 趋势需要 Fp1/Fp2/Fpz 中至少一个通道。",
+                detail="N-back 前额频带趋势需要 Fp1/Fp2/Fpz 中至少一个通道。",
                 metrics={"有效数据秒数": data.shape[1] / metadata.sfreq},
                 missing=("Fp1/Fp2/Fpz",),
             )
@@ -302,10 +302,27 @@ class NBackBaselineDecoder:
             metrics[f"{metadata.channel_names[index]} theta dB"] = float(bands["theta"][index])
         if left and right:
             metrics["Fp1-Fp2 theta 偏侧 dB"] = float(bands["theta"][left[0]] - bands["theta"][right[0]])
+        load_theta = [payload.get(f"nback_{level}_theta_db") for level in (0, 1, 2)]
+        for level in (0, 1, 2):
+            for band in ("theta", "alpha", "beta"):
+                key = f"nback_{level}_{band}_db"
+                if key in payload:
+                    metrics[f"{level}-back {band} dB"] = float(payload[key])
+            accuracy_key = f"nback_{level}_behavior_accuracy"
+            if accuracy_key in payload:
+                metrics[f"{level}-back 正确率"] = float(payload[accuracy_key] or 0.0)
+        if all(value is not None for value in load_theta):
+            metrics["1-back - 0-back theta dB"] = float(load_theta[1]) - float(load_theta[0])
+            metrics["2-back - 0-back theta dB"] = float(load_theta[2]) - float(load_theta[0])
+            value = "theta 0/1/2-back " + "/".join(f"{float(item):.1f}" for item in load_theta) + " dB"
+            detail = "按 block 汇总 0/1/2-back 会话内前额频带趋势；不预设负荷效应必须严格单调。"
+        else:
+            value = f"前额 theta {metrics['前额 theta 平均 dB']:.1f} dB"
+            detail = "正在积累分 block 的 0/1/2-back 负荷数据；固定 J/F 映射的偏侧结果仅作探索。"
         return DecoderResult(
-            value=f"前额 theta {metrics['前额 theta 平均 dB']:.1f} dB",
+            value=value,
             confidence=0.45,
-            detail="没有 0-back 对照，因此不宣称负荷诱发 theta；J/F 固定映射也会混入左右手效应，Fp 偏侧仅作探索。",
+            detail=detail,
             metrics=metrics,
         )
 
@@ -444,7 +461,7 @@ BASELINE_DECODERS: Mapping[str, object] = {
     "视觉图像识别": VisualBaselineDecoder(),
     "注意力": AttentionBaselineDecoder(),
     "静息睁眼/闭眼": RestingStateBaselineDecoder(),
-    "2-back 工作记忆": NBackBaselineDecoder(),
+    "N-back 工作记忆": NBackBaselineDecoder(),
     "Stroop 色词冲突": StroopBaselineDecoder(),
     "情绪分类": EmotionBaselineDecoder(),
     "情绪图片唤醒": EmotionBaselineDecoder(),

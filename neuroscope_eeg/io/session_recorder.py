@@ -23,7 +23,7 @@ from neuroscope_eeg.desktop.protocols import PROTOCOL_VERSION, TIMING_STATUS, St
 _PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _PARADIGM_SLUGS = {
     "静息睁眼/闭眼": "rest",
-    "2-back 工作记忆": "nback",
+    "N-back 工作记忆": "nback",
     "Stroop 色词冲突": "stroop",
     "听觉 ASSR": "assr",
     "听觉 Oddball": "oddball",

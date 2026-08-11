@@ -23,7 +23,7 @@ def test_recorder_creates_session_immediately_and_writes_readable_bdf(tmp_path: 
     recorder = SessionRecorder.start(
         root_dir=tmp_path,
         participant_id="S01",
-        paradigm="2-back 工作记忆",
+        paradigm="N-back 工作记忆",
         preset="完整采集",
         metadata=metadata,
         source_sample_offset=20,
@@ -44,7 +44,7 @@ def test_recorder_creates_session_immediately_and_writes_readable_bdf(tmp_path: 
         )
     )
     recorder.record_event(
-        StimulusEvent(12.0, 34.0, "2-back 工作记忆", "nback_trial", "7", {"is_practice": False}),
+        StimulusEvent(12.0, 34.0, "N-back 工作记忆", "nback_trial", "7", {"is_practice": False}),
         eeg_sample_index=15,
         eeg_session_sec=1.5,
     )
@@ -104,7 +104,7 @@ def test_recorder_rejects_unsafe_participant_id(tmp_path: Path) -> None:
         SessionRecorder.start(
             root_dir=tmp_path,
             participant_id="../S01",
-            paradigm="2-back 工作记忆",
+            paradigm="N-back 工作记忆",
             preset="完整采集",
             metadata=metadata,
         )

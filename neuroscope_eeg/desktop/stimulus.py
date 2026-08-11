@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_right
+from itertools import accumulate
 import math
 import random
 from statistics import median
@@ -16,17 +18,17 @@ from neuroscope_eeg.desktop.protocols import (
     PROTOCOL_VERSION,
     STROOP_RESPONSE_KEYS,
     TIMING_STATUS,
-    NBackTrial,
+    NBACK_LEVELS,
+    NBackScheduleItem,
     ProtocolPreset,
     StimulusEvent,
     StroopTrial,
     balanced_accuracy,
     frame_locked_frequencies,
-    generate_nback_trials,
+    generate_nback_schedule,
     generate_oddball_sequence,
     generate_oddball_soa,
     generate_stroop_trials,
-    nback_item_duration,
     nback_response_is_open,
     signal_detection_metrics,
 )
@@ -83,14 +85,24 @@ class StimulusWindow(QWidget):
         self._current_started_at = 0.0
         self._current_payload: dict = {}
         self._response_times_ms: list[float] = []
-        self._nback_practice: tuple[NBackTrial, ...] = ()
-        self._nback_formal: tuple[NBackTrial, ...] = ()
-        self._nback_items: tuple[tuple[str, NBackTrial | None, bool], ...] = ()
+        self._nback_items: tuple[NBackScheduleItem, ...] = ()
+        self._nback_item_ends: tuple[float, ...] = ()
         self._nback_item_index = -1
         self._nback_condition_trials = {"target": 0, "non_target": 0}
         self._nback_condition_correct = {"target": 0, "non_target": 0}
         self._nback_condition_rts: dict[str, list[float]] = {"target": [], "non_target": []}
         self._nback_omissions = 0
+        self._nback_load_condition_trials = self._new_nback_load_condition_counts()
+        self._nback_load_condition_correct = self._new_nback_load_condition_counts()
+        self._nback_load_condition_rts = self._new_nback_load_condition_rts()
+        self._nback_load_false_alarms = {level: 0 for level in NBACK_LEVELS}
+        self._nback_load_omissions = {level: 0 for level in NBACK_LEVELS}
+        self._nback_block_condition_trials = {"target": 0, "non_target": 0}
+        self._nback_block_condition_correct = {"target": 0, "non_target": 0}
+        self._nback_block_condition_rts: dict[str, list[float]] = {"target": [], "non_target": []}
+        self._nback_block_false_alarms = 0
+        self._nback_block_omissions = 0
+        self._nback_last_completed_block = -1
         self._stroop_practice: tuple[StroopTrial, ...] = ()
         self._stroop_formal: tuple[StroopTrial, ...] = ()
         self._stroop_item_index = -1
@@ -188,17 +200,21 @@ class StimulusWindow(QWidget):
         self.stopped.emit()
 
     def _prepare_protocol(self) -> None:
-        if self.paradigm == "2-back 工作记忆":
-            self._nback_practice = generate_nback_trials(10, 3, seed=11)
-            self._nback_formal = generate_nback_trials(
-                self.preset.nback_trials, self.preset.nback_targets, seed=17
-            )
-            self._nback_items = self._build_nback_items()
+        if self.paradigm == "N-back 工作记忆":
+            self._nback_items = generate_nback_schedule(self.preset)
+            self._nback_item_ends = tuple(accumulate(item.duration_sec for item in self._nback_items))
             self._nback_item_index = -1
             self._nback_condition_trials = {"target": 0, "non_target": 0}
             self._nback_condition_correct = {"target": 0, "non_target": 0}
             self._nback_condition_rts = {"target": [], "non_target": []}
             self._nback_omissions = 0
+            self._nback_load_condition_trials = self._new_nback_load_condition_counts()
+            self._nback_load_condition_correct = self._new_nback_load_condition_counts()
+            self._nback_load_condition_rts = self._new_nback_load_condition_rts()
+            self._nback_load_false_alarms = {level: 0 for level in NBACK_LEVELS}
+            self._nback_load_omissions = {level: 0 for level in NBACK_LEVELS}
+            self._reset_nback_block_stats()
+            self._nback_last_completed_block = -1
         elif self.paradigm == "Stroop 色词冲突":
             self._stroop_practice = generate_stroop_trials(12, seed=11)
             self._stroop_formal = generate_stroop_trials(self.preset.stroop_trials, seed=17)
@@ -223,25 +239,26 @@ class StimulusWindow(QWidget):
             self._emotion_phase_started_at = self.started_at
             self._emotion_warning_confirmed = False
 
-    def _build_nback_items(self) -> tuple[tuple[str, NBackTrial | None, bool], ...]:
-        items: list[tuple[str, NBackTrial | None, bool]] = []
-        for sequence, practice in ((self._nback_practice, True), (self._nback_formal, False)):
-            items.extend(
-                (
-                    (sequence[0].two_back_symbol, None, practice),
-                    (sequence[1].two_back_symbol, None, practice),
-                )
-            )
-            items.extend((trial.symbol, trial, practice) for trial in sequence)
-            if practice:
-                items.append(("正式开始", None, False))
-        return tuple(items)
+    @staticmethod
+    def _new_nback_load_condition_counts() -> dict[int, dict[str, int]]:
+        return {level: {"target": 0, "non_target": 0} for level in NBACK_LEVELS}
+
+    @staticmethod
+    def _new_nback_load_condition_rts() -> dict[int, dict[str, list[float]]]:
+        return {level: {"target": [], "non_target": []} for level in NBACK_LEVELS}
+
+    def _reset_nback_block_stats(self) -> None:
+        self._nback_block_condition_trials = {"target": 0, "non_target": 0}
+        self._nback_block_condition_correct = {"target": 0, "non_target": 0}
+        self._nback_block_condition_rts = {"target": [], "non_target": []}
+        self._nback_block_false_alarms = 0
+        self._nback_block_omissions = 0
 
     def summary(self) -> dict[str, float | int | None]:
         accuracy = (
             self.hits / self.targets
             if self.targets
-            and self.paradigm in {"视觉图像识别", "注意力", "2-back 工作记忆", "听觉 Oddball"}
+            and self.paradigm in {"视觉图像识别", "注意力", "N-back 工作记忆", "听觉 Oddball"}
             else None
         )
         result: dict[str, float | int | None] = {
@@ -254,7 +271,7 @@ class StimulusWindow(QWidget):
             "missed_frames_estimate": self.missed_frames,
             "median_response_time_ms": median(self._response_times_ms) if self._response_times_ms else None,
         }
-        if self.paradigm in {"2-back 工作记忆", "听觉 Oddball"}:
+        if self.paradigm in {"N-back 工作记忆", "听觉 Oddball"}:
             non_targets = max(0, self.trials - self.targets)
             result.update(
                 signal_detection_metrics(
@@ -264,7 +281,7 @@ class StimulusWindow(QWidget):
                     false_alarms=self._false_alarms,
                 )
             )
-        if self.paradigm == "2-back 工作记忆":
+        if self.paradigm == "N-back 工作记忆":
             result.update(self._nback_summary())
         if self.paradigm == "听觉 Oddball":
             result["misses"] = max(0, self.targets - self.hits)
@@ -283,7 +300,7 @@ class StimulusWindow(QWidget):
         target_rts = self._nback_condition_rts["target"]
         non_target_rts = self._nback_condition_rts["non_target"]
         total_correct = target_correct + non_target_correct
-        return {
+        result: dict[str, float | int | None] = {
             "behavior_accuracy": total_correct / self.trials if self.trials else 0.0,
             "balanced_accuracy": balanced_accuracy(
                 first_correct=target_correct,
@@ -297,6 +314,53 @@ class StimulusWindow(QWidget):
             "nonmatch_median_response_time_ms": median(non_target_rts) if non_target_rts else None,
             "omissions": self._nback_omissions,
         }
+        for level in NBACK_LEVELS:
+            level_trials = self._nback_load_condition_trials[level]
+            level_correct = self._nback_load_condition_correct[level]
+            level_rts = self._nback_load_condition_rts[level]
+            target_trials = level_trials["target"]
+            non_target_trials = level_trials["non_target"]
+            target_correct = level_correct["target"]
+            non_target_correct = level_correct["non_target"]
+            trial_count = target_trials + non_target_trials
+            prefix = f"nback_{level}_"
+            result.update(
+                {
+                    f"{prefix}trials": trial_count,
+                    f"{prefix}behavior_accuracy": (
+                        (target_correct + non_target_correct) / trial_count if trial_count else 0.0
+                    ),
+                    f"{prefix}balanced_accuracy": balanced_accuracy(
+                        first_correct=target_correct,
+                        first_total=target_trials,
+                        second_correct=non_target_correct,
+                        second_total=non_target_trials,
+                    ),
+                    f"{prefix}match_accuracy": (
+                        target_correct / target_trials if target_trials else 0.0
+                    ),
+                    f"{prefix}nonmatch_accuracy": (
+                        non_target_correct / non_target_trials if non_target_trials else 0.0
+                    ),
+                    f"{prefix}match_median_response_time_ms": (
+                        median(level_rts["target"]) if level_rts["target"] else None
+                    ),
+                    f"{prefix}nonmatch_median_response_time_ms": (
+                        median(level_rts["non_target"]) if level_rts["non_target"] else None
+                    ),
+                    f"{prefix}omissions": self._nback_load_omissions[level],
+                    **{
+                        f"{prefix}{key}": value
+                        for key, value in signal_detection_metrics(
+                            targets=target_trials,
+                            hits=target_correct,
+                            non_targets=non_target_trials,
+                            false_alarms=self._nback_load_false_alarms[level],
+                        ).items()
+                    },
+                }
+            )
+        return result
 
     def _stroop_summary(self) -> dict[str, float | int | None]:
         total_correct = sum(self._stroop_condition_correct.values())
@@ -352,7 +416,7 @@ class StimulusWindow(QWidget):
             self._update_oddball(now)
         elif self.paradigm == "静息睁眼/闭眼":
             self._update_resting(elapsed)
-        elif self.paradigm == "2-back 工作记忆":
+        elif self.paradigm == "N-back 工作记忆":
             self._update_nback(elapsed, now)
         elif self.paradigm == "Stroop 色词冲突":
             self._update_stroop(elapsed, now)
@@ -497,64 +561,137 @@ class StimulusWindow(QWidget):
             )
             return
         schedule_elapsed = elapsed - 10.0
-        item_index = 0
-        while item_index < len(self._nback_items):
-            item_duration = self._nback_item_duration(item_index)
-            if schedule_elapsed < item_duration:
-                break
-            schedule_elapsed -= item_duration
-            item_index += 1
+        item_index = bisect_right(self._nback_item_ends, schedule_elapsed)
         if item_index >= len(self._nback_items):
             self._finalize_nback_trial()
+            if self._nback_items:
+                self._finish_nback_block(self._nback_items[-1])
             self.stop_protocol()
             return
+        item_started_at = 0.0 if item_index == 0 else self._nback_item_ends[item_index - 1]
+        item_elapsed = schedule_elapsed - item_started_at
         if item_index != self._nback_item_index:
             self._finalize_nback_trial()
             self._nback_item_index = item_index
-            symbol, trial, practice = self._nback_items[item_index]
-            self.current_symbol = symbol
-            self.current_target = bool(trial and trial.is_target)
+            item = self._nback_items[item_index]
+            self.current_symbol = item.label
+            self.current_target = bool(item.kind == "trial" and item.trial and item.trial.is_target)
             self._responded_to_item = False
-            self._current_started_at = now - schedule_elapsed
+            self._current_started_at = now - item_elapsed
             self._feedback_text = ""
-            if symbol == "正式开始":
-                self._current_payload = {"is_practice": False, "formal_trial_index": -1}
-            elif trial is None:
-                self._current_payload = {
-                    "symbol": symbol,
-                    "is_practice": practice,
-                    "condition": "context",
-                    "formal_trial_index": -1,
-                }
-            else:
+            self._current_payload = self._nback_item_payload(item)
+            if item.kind == "rule" and not item.is_practice:
+                self._reset_nback_block_stats()
+                self._emit("nback_block_start", item.label, self._current_payload)
+            elif item.kind == "rest":
+                self._finish_nback_block(item)
+            elif item.kind == "trial" and item.trial is not None:
+                trial = item.trial
                 condition = "target" if trial.is_target else "non_target"
-                if not practice:
+                if not item.is_practice:
                     self.trials += 1
                     self.targets += int(trial.is_target)
                     self._nback_condition_trials[condition] += 1
-                self._current_payload = {
-                    "trial_index": trial.trial_index,
-                    "formal_trial_index": trial.trial_index if not practice else -1,
-                    "is_practice": practice,
-                    "symbol": trial.symbol,
-                    "two_back_symbol": trial.two_back_symbol,
-                    "is_target": trial.is_target,
-                    "target_present": trial.is_target,
-                    "condition": condition,
-                    "correct_response": "J" if trial.is_target else "F",
-                }
+                    self._nback_load_condition_trials[item.nback_level][condition] += 1
+                    self._nback_block_condition_trials[condition] += 1
+                self._current_payload.update(
+                    {
+                        "trial_index": trial.trial_index,
+                        "symbol": trial.symbol,
+                        "comparison_symbol": trial.comparison_symbol,
+                        "is_target": trial.is_target,
+                        "target_present": trial.is_target,
+                        "condition": condition,
+                        "correct_response": "J" if trial.is_target else "F",
+                    }
+                )
                 self._emit("nback_trial", trial.symbol, self._current_payload)
-        symbol, trial, practice = self._nback_items[item_index]
-        if symbol == "正式开始":
-            self._set_phase("formal_ready", "正式试次即将开始", self._current_payload)
-        elif trial is None:
-            self._set_phase("nback_context", symbol, self._current_payload)
+        item = self._nback_items[item_index]
+        if item.kind == "rule":
+            self._set_phase("nback_rule", item.label, self._current_payload)
+        elif item.kind == "context":
+            self._set_phase("nback_context", item.label, self._current_payload)
+        elif item.kind == "trial" and item.trial is not None:
+            self._set_phase("nback_stimulus", item.trial.symbol, self._current_payload)
+        elif item.kind == "blank":
+            self._set_phase("nback_blank", "", self._current_payload)
         else:
-            self._set_phase("nback_stimulus", trial.symbol, self._current_payload)
+            self._current_payload["remaining_sec"] = max(
+                0, math.ceil(item.duration_sec - item_elapsed)
+            )
+            self._set_phase("nback_block_rest", "休息", self._current_payload)
 
-    def _nback_item_duration(self, item_index: int) -> float:
-        symbol, _trial, _practice = self._nback_items[item_index]
-        return nback_item_duration(symbol)
+    @staticmethod
+    def _nback_item_payload(item: NBackScheduleItem) -> dict:
+        return {
+            "is_practice": item.is_practice,
+            "nback_level": item.nback_level,
+            "block_index": item.block_index,
+            "load_block_index": item.load_block_index,
+            "formal_trial_index": item.formal_trial_index,
+            "target_symbol": item.target_symbol,
+            "sequence_seed": item.sequence_seed,
+            "planned_duration_s": item.duration_sec,
+            "condition": item.kind,
+        }
+
+    def _finish_nback_block(self, item: NBackScheduleItem) -> None:
+        if item.block_index < 0 or item.block_index <= self._nback_last_completed_block:
+            return
+        self._nback_last_completed_block = item.block_index
+        self._emit(
+            "nback_block_end",
+            f"{item.nback_level}-back",
+            {
+                **self._nback_item_payload(item),
+                "planned_formal_duration_s": self.preset.nback_trials_per_block * 2.0,
+                **self._nback_block_summary(),
+            },
+        )
+
+    def _nback_block_summary(self) -> dict[str, float | int | None]:
+        target_trials = self._nback_block_condition_trials["target"]
+        non_target_trials = self._nback_block_condition_trials["non_target"]
+        target_correct = self._nback_block_condition_correct["target"]
+        non_target_correct = self._nback_block_condition_correct["non_target"]
+        trial_count = target_trials + non_target_trials
+        return {
+            "block_trials": trial_count,
+            "block_behavior_accuracy": (
+                (target_correct + non_target_correct) / trial_count if trial_count else 0.0
+            ),
+            "block_balanced_accuracy": balanced_accuracy(
+                first_correct=target_correct,
+                first_total=target_trials,
+                second_correct=non_target_correct,
+                second_total=non_target_trials,
+            ),
+            "block_match_accuracy": target_correct / target_trials if target_trials else 0.0,
+            "block_nonmatch_accuracy": (
+                non_target_correct / non_target_trials if non_target_trials else 0.0
+            ),
+            "block_match_median_response_time_ms": (
+                median(self._nback_block_condition_rts["target"])
+                if self._nback_block_condition_rts["target"]
+                else None
+            ),
+            "block_nonmatch_median_response_time_ms": (
+                median(self._nback_block_condition_rts["non_target"])
+                if self._nback_block_condition_rts["non_target"]
+                else None
+            ),
+            "block_false_alarms": self._nback_block_false_alarms,
+            "block_omissions": self._nback_block_omissions,
+            **{
+                f"block_{key}": value
+                for key, value in signal_detection_metrics(
+                    targets=target_trials,
+                    hits=target_correct,
+                    non_targets=non_target_trials,
+                    false_alarms=self._nback_block_false_alarms,
+                ).items()
+            },
+        }
 
     def _finalize_nback_trial(self) -> None:
         if self._responded_to_item or "is_target" not in self._current_payload:
@@ -565,6 +702,9 @@ class StimulusWindow(QWidget):
             self._feedback_text = "未作答"
         else:
             self._nback_omissions += 1
+            level = int(self._current_payload["nback_level"])
+            self._nback_load_omissions[level] += 1
+            self._nback_block_omissions += 1
         self._emit("omission", "未作答", {**self._current_payload, "is_correct": False})
 
     def _update_stroop(self, elapsed: float, now: float) -> None:
@@ -830,7 +970,7 @@ class StimulusWindow(QWidget):
             else:
                 text, hint = self._last_phase.partition(":")[2] or "准备", "减少眨眼和身体活动"
             self._paint_center(painter, text, hint, QColor("#0f172a"))
-        elif self.paradigm == "2-back 工作记忆":
+        elif self.paradigm == "N-back 工作记忆":
             self._paint_nback(painter)
         elif self.paradigm == "Stroop 色词冲突":
             self._paint_stroop(painter)
@@ -888,8 +1028,33 @@ class StimulusWindow(QWidget):
         if phase == "nback_baseline":
             self._paint_center(painter, "+", "静息基线｜保持注视", QColor("#0f172a"))
             return
-        if phase == "formal_ready":
-            self._paint_center(painter, "正式开始", "一致按 J，不一致按 F", QColor("#0f172a"))
+        if phase == "nback_rule":
+            stage = "练习" if self._current_payload.get("is_practice") else "正式"
+            block_index = int(self._current_payload.get("block_index", -1))
+            progress = "" if block_index < 0 else f"｜block {block_index + 1}/{self.preset.nback_blocks_per_level * 3}"
+            self._paint_center(
+                painter,
+                self.current_symbol,
+                f"目标按 J，非目标按 F｜{stage}{progress}",
+                QColor("#0f172a"),
+            )
+            return
+        if phase == "nback_block_rest":
+            remaining = int(self._current_payload.get("remaining_sec", 25))
+            self._paint_center(
+                painter,
+                f"休息 {remaining} 秒",
+                "请放松，倒计时结束后自动进入下一 block",
+                QColor("#0f172a"),
+            )
+            return
+        if phase == "nback_blank":
+            self._paint_center(
+                painter,
+                "",
+                f"{int(self._current_payload.get('nback_level', 0))}-back｜目标按 J，非目标按 F",
+                QColor("#0f172a"),
+            )
             return
 
         painter.fillRect(self.rect(), QColor("#0f172a"))
@@ -909,7 +1074,13 @@ class StimulusWindow(QWidget):
         painter.setFont(QFont("Microsoft YaHei UI", 18))
         painter.setPen(QColor("#cbd5e1"))
         stage = "练习" if self._current_payload.get("is_practice") else "正式"
-        hint = f"一致按 J，不一致按 F｜{stage}｜正式试次 {self.trials}/{self.preset.nback_trials}"
+        level = int(self._current_payload.get("nback_level", 0))
+        block_index = int(self._current_payload.get("block_index", -1))
+        block_text = "" if block_index < 0 else f"｜block {block_index + 1}/{self.preset.nback_blocks_per_level * 3}"
+        hint = (
+            f"{level}-back｜目标按 J，非目标按 F｜{stage}{block_text}"
+            f"｜正式试次 {self.trials}/{self.preset.nback_trials}"
+        )
         painter.drawText(
             self.rect().adjusted(80, self.height() - 150, -80, -50),
             Qt.AlignmentFlag.AlignCenter,
@@ -1033,7 +1204,7 @@ class StimulusWindow(QWidget):
                 self._last_problem_at = 0.0
                 self._math_problem = ""
                 self._typed_answer = ""
-        elif self.paradigm == "2-back 工作记忆" and event.text().upper() in {"J", "F"}:
+        elif self.paradigm == "N-back 工作记忆" and event.text().upper() in {"J", "F"}:
             self._handle_nback_response(event.text().upper())
         elif self.paradigm == "Stroop 色词冲突" and event.text().upper() in set(STROOP_RESPONSE_KEYS.values()):
             self._handle_stroop_response(event.text().upper())
@@ -1085,9 +1256,16 @@ class StimulusWindow(QWidget):
                 self.hits += 1
             if not self.current_target and key == "J":
                 self._false_alarms += 1
+                self._nback_load_false_alarms[int(self._current_payload["nback_level"])] += 1
+                self._nback_block_false_alarms += 1
             if correct:
                 self._nback_condition_correct[condition] += 1
                 self._nback_condition_rts[condition].append(response_time_ms)
+                level = int(self._current_payload["nback_level"])
+                self._nback_load_condition_correct[level][condition] += 1
+                self._nback_load_condition_rts[level][condition].append(response_time_ms)
+                self._nback_block_condition_correct[condition] += 1
+                self._nback_block_condition_rts[condition].append(response_time_ms)
                 self._response_times_ms.append(response_time_ms)
         else:
             self._feedback_text = "正确" if correct else f"正确键：{self._current_payload['correct_response']}"

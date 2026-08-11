@@ -62,7 +62,7 @@ SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo"
 PLOT_COLORS = ("#38bdf8", "#f59e0b", "#34d399", "#fb7185", "#a78bfa", "#22d3ee")
 FIXED_PILOT_PARADIGMS = {
     "静息睁眼/闭眼",
-    "2-back 工作记忆",
+    "N-back 工作记忆",
     "Stroop 色词冲突",
     "情绪图片唤醒",
     "听觉 ASSR",
@@ -298,7 +298,7 @@ class NeuroScopeWindow(QMainWindow):
         paradigm_form.addRow("视觉任务", self.visual_protocol)
         paradigm_form.addRow("注意力任务", self.attention_protocol)
         paradigm_form.addRow("静息任务", self.resting_protocol)
-        paradigm_form.addRow("2-back", self.nback_protocol)
+        paradigm_form.addRow("N-back", self.nback_protocol)
         paradigm_form.addRow("Stroop", self.stroop_protocol)
         paradigm_form.addRow("情绪图片", self.emotion_protocol)
         paradigm_form.addRow("听觉 ASSR", self.assr_protocol)
@@ -507,7 +507,7 @@ class NeuroScopeWindow(QMainWindow):
             self.visual_protocol: paradigm == "视觉图像识别",
             self.attention_protocol: paradigm == "注意力",
             self.resting_protocol: paradigm == "静息睁眼/闭眼",
-            self.nback_protocol: paradigm == "2-back 工作记忆",
+            self.nback_protocol: paradigm == "N-back 工作记忆",
             self.stroop_protocol: paradigm == "Stroop 色词冲突",
             self.emotion_protocol: paradigm == "情绪图片唤醒",
             self.assr_protocol: paradigm == "听觉 ASSR",
@@ -529,8 +529,9 @@ class NeuroScopeWindow(QMainWindow):
             f"睁眼/闭眼各 {preset.rest_repetitions}×{preset.rest_duration_sec}s｜段间过渡 10s｜前额 alpha/θ/β"
         )
         self.nback_protocol.setText(
-            f"10 个练习 + {preset.nback_trials} 个正式试次｜一致 {preset.nback_targets} / 不一致 "
-            f"{preset.nback_trials - preset.nback_targets}｜每个数字 1500ms 无缝切换｜一致 J、不一致 F｜仅练习反馈"
+            f"0/1/2-back｜每负荷 {preset.nback_blocks_per_level} blocks × "
+            f"{preset.nback_trials_per_block} trials｜共 {preset.nback_trials} trials｜"
+            "1500ms 数字 + 500ms 空屏｜block 间休息 25s｜目标 J、非目标 F｜仅练习反馈"
         )
         self.stroop_protocol.setText(
             f"12 个练习 + {preset.stroop_trials} 个正式试次｜一致/不一致各半｜一致 J、不一致 F｜仅练习反馈"
@@ -734,11 +735,14 @@ class NeuroScopeWindow(QMainWindow):
         ):
             duration = float(PRESETS[self.protocol_preset.currentText()].rest_duration_sec)
             field_prefix = "eyes_open"
-        elif event.paradigm == "2-back 工作记忆" and event.phase == "nback_context":
+        elif event.paradigm == "N-back 工作记忆" and event.phase == "nback_rule":
             if "nback_baseline_theta_db" not in self._protocol_reference_metrics:
                 duration = 10.0
                 band_name = "theta"
                 field_prefix = "nback_baseline"
+        elif event.paradigm == "N-back 工作记忆" and event.phase == "nback_block_end":
+            self._capture_nback_block_bands(event)
+            return
         elif event.paradigm == "情绪图片唤醒" and event.phase == "emotion_fixation":
             if "emotion_baseline_alpha_db" not in self._protocol_reference_metrics:
                 duration = 20.0
@@ -763,6 +767,45 @@ class NeuroScopeWindow(QMainWindow):
             if name in lookup:
                 key = f"{field_prefix}_{name.lower()}_{band_name}_db"
                 self._protocol_reference_metrics[key] = float(bands[band_name][lookup[name]])
+
+    def _capture_nback_block_bands(self, event: StimulusEvent) -> None:
+        if self.controller is None or isinstance(self.controller.source, TD10LSLSource):
+            return
+        duration = float(event.payload.get("planned_formal_duration_s", 0.0))
+        if duration <= 0.0:
+            return
+        snapshot = self.controller.buffer.latest_available(duration)
+        if snapshot is None or snapshot[0].shape[1] < 32:
+            return
+        metadata = self.controller.source.metadata
+        lookup = {name.upper(): index for index, name in enumerate(metadata.channel_names)}
+        frontal = [lookup[name] for name in ("FP1", "FP2", "FPZ") if name in lookup]
+        if not frontal:
+            return
+        freqs, psd = power_spectrum(snapshot[0], metadata.sfreq)
+        bands = band_power(freqs, psd)
+        level = int(event.payload["nback_level"])
+        load_block_index = int(event.payload["load_block_index"])
+        for band in ("theta", "alpha", "beta"):
+            value = float(np.mean(bands[band][frontal]))
+            block_key = f"nback_{level}_block_{load_block_index}_{band}_db"
+            self._protocol_reference_metrics[block_key] = value
+            prefix = f"nback_{level}_block_"
+            suffix = f"_{band}_db"
+            completed = [
+                metric
+                for key, metric in self._protocol_reference_metrics.items()
+                if key.startswith(prefix) and key.endswith(suffix)
+            ]
+            self._protocol_reference_metrics[f"nback_{level}_{band}_db"] = float(
+                np.mean(completed)
+            )
+        self._protocol_reference_metrics[f"nback_{level}_blocks_completed"] = float(
+            sum(
+                key.startswith(f"nback_{level}_block_") and key.endswith("_theta_db")
+                for key in self._protocol_reference_metrics
+            )
+        )
 
     def _export_events(self) -> None:
         if not self.stimulus_events:
@@ -1128,7 +1171,7 @@ class NeuroScopeWindow(QMainWindow):
                 "视觉图像识别": {"stimulus", "response"},
                 "注意力": {"mental_math", "problem", "response"},
                 "静息睁眼/闭眼": {"eyes_open", "eyes_closed"},
-                "2-back 工作记忆": {"nback_trial", "nback_stimulus", "response"},
+                "N-back 工作记忆": {"nback_trial", "nback_stimulus", "response"},
                 "Stroop 色词冲突": {"stroop_stimulus", "stroop_blank", "response"},
                 "情绪图片唤醒": {
                     "emotion_image",
