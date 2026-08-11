@@ -39,7 +39,6 @@ from neuroscope_eeg.acquisition.td10_lsl import (
     DEFAULT_TD10_BASE_SOURCE_ID,
     TD10LSLDevice,
     TD10LSLSource,
-    TD10Sidecars,
     discover_td10_devices,
 )
 from neuroscope_eeg.analysis.quality import QualityReport, signal_quality
@@ -53,6 +52,11 @@ from neuroscope_eeg.desktop.stimulus import StimulusWindow
 from neuroscope_eeg.io.session_recorder import RecordingError, SessionRecorder
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
 from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
+from neuroscope_eeg.timing.codebook import definition_by_symbol, event_code_for
+from neuroscope_eeg.timing.lsl_markers import LSLMarkerTransport
+from neuroscope_eeg.timing.models import TriggerRequest
+from neuroscope_eeg.timing.neuracle_dcp import NDE0001Transport
+from neuroscope_eeg.timing.router import TriggerRouter
 
 
 MAX_VISIBLE_CHANNELS = 32
@@ -117,6 +121,7 @@ class NeuroScopeWindow(QMainWindow):
         self.resize(1500, 920)
         self.controller: SessionController | None = None
         self._session_recorder: SessionRecorder | None = None
+        self._trigger_router: TriggerRouter | None = None
         self._analysis_data: np.ndarray | None = None
         self._analysis_metadata: SourceMetadata | None = None
         self._fps = FpsTracker()
@@ -267,6 +272,24 @@ class NeuroScopeWindow(QMainWindow):
         td10_form.addRow(td10_note)
         layout.addWidget(self.td10_group)
 
+        self.timing_group = QGroupBox("实验事件同步")
+        timing_form = QFormLayout(self.timing_group)
+        self.timing_mode = QComboBox()
+        self.timing_mode.addItem("NDE0001 硬件 + LSL（推荐）", "hardware_lsl")
+        self.timing_mode.addItem("仅 LSL", "lsl_only")
+        self.timing_mode.currentIndexChanged.connect(self._timing_mode_changed)
+        self.trigger_port = QLineEdit("COM5")
+        self.trigger_port.setPlaceholderText("例如 COM5 或 /dev/cu.usbserial-xxxx")
+        timing_note = QLabel(
+            "NDE0001 使用 DCP 01 E1 01 00 XX。现场无光电/音频回环，物理刺激起始未校准。"
+        )
+        timing_note.setWordWrap(True)
+        timing_note.setObjectName("muted")
+        timing_form.addRow("同步模式", self.timing_mode)
+        timing_form.addRow("NDE0001 串口", self.trigger_port)
+        timing_form.addRow(timing_note)
+        layout.addWidget(self.timing_group)
+
         paradigm = QGroupBox("范式参数")
         paradigm_form = QFormLayout(paradigm)
         self.paradigm_form = paradigm_form
@@ -307,7 +330,7 @@ class NeuroScopeWindow(QMainWindow):
         self._preset_changed()
         layout.addWidget(paradigm)
 
-        stimulus = QGroupBox("刺激呈现（软件同步）")
+        stimulus = QGroupBox("刺激呈现与事件打标")
         stimulus_layout = QVBoxLayout(stimulus)
         self.display_select = QComboBox()
         self._populate_displays()
@@ -463,6 +486,10 @@ class NeuroScopeWindow(QMainWindow):
         self.decoder_timer = QTimer(self)
         self.decoder_timer.timeout.connect(self._refresh_decoder)
 
+    def _timing_mode_changed(self) -> None:
+        hardware = self.timing_mode.currentData() == "hardware_lsl"
+        self.trigger_port.setEnabled(hardware and self._trigger_router is None)
+
     def _source_changed(self) -> None:
         source = self.source_select.currentText()
         is_replay = source == "NPZ 回放"
@@ -563,6 +590,61 @@ class NeuroScopeWindow(QMainWindow):
         index = int(self.display_select.currentData() or 0)
         return screens[min(index, len(screens) - 1)]
 
+    def _open_trigger_router(self, session_id: str) -> None:
+        mode = str(self.timing_mode.currentData())
+        hardware = (
+            NDE0001Transport(self.trigger_port.text().strip())
+            if mode == "hardware_lsl"
+            else None
+        )
+        router = TriggerRouter(mode, hardware=hardware, lsl=LSLMarkerTransport())
+        router.open(session_id)
+        self._trigger_router = router
+        self.timing_mode.setEnabled(False)
+        self.trigger_port.setEnabled(False)
+        if self._session_recorder is not None:
+            self._session_recorder.configure_trigger_timing(
+                mode=mode,
+                port=self.trigger_port.text().strip() if hardware is not None else "",
+                lsl_source_id=str(getattr(router.lsl, "source_id", "")),
+            )
+        if hardware is None:
+            return
+        calibration = router.dispatch(
+            TriggerRequest(
+                paradigm="system",
+                phase="calibration",
+                label="NDE0001 Trigger 通道自检",
+                payload={"condition": "trigger_path_calibration"},
+                wall_time=time.time(),
+                intent_time=time.monotonic(),
+                onset_hook_time=time.monotonic(),
+                hook_type="software",
+            ),
+            definition_by_symbol("TRIGGER_PATH_CALIBRATION"),
+        )
+        if self._session_recorder is not None:
+            self._session_recorder.record_trigger_dispatch(calibration)
+        if calibration.hardware_error:
+            raise RuntimeError(f"NDE0001 校准码发送失败：{calibration.hardware_error}")
+        confirmed = QMessageBox.question(
+            self,
+            "确认 Trigger 通道",
+            "已发送校准码 120。请确认博睿康采集界面已收到 120，再继续实验。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            raise RuntimeError("实验员未确认博睿康收到校准码 120")
+
+    def _close_trigger_router(self) -> None:
+        router = self._trigger_router
+        self._trigger_router = None
+        if router is not None:
+            router.close()
+        self.timing_mode.setEnabled(True)
+        self._timing_mode_changed()
+
     def _start_stimulus(self) -> None:
         if self.controller is None or self.controller.state is not ConnectionState.RUNNING:
             QMessageBox.information(self, "请先启动采集", "请先启动模拟源或真机采集，再开始第二屏刺激。")
@@ -606,26 +688,25 @@ class NeuroScopeWindow(QMainWindow):
                 QMessageBox.critical(self, "无法开始完整记录", str(exc))
                 self.stimulus_status.setText(f"未启动｜{exc}")
                 return
-        if td10_source is not None:
-            session_id = (
-                self._session_recorder.session_dir.name
-                if self._session_recorder is not None
-                else f"preview-{time.time_ns()}"
-            )
-            try:
-                td10_source.start_marker_outlet(session_id)
-            except RuntimeError as exc:
-                self._finish_session_recording(status="error", reason="marker_outlet_failed")
-                QMessageBox.critical(self, "无法启动 LSL Marker", str(exc))
-                self.stimulus_status.setText(f"未启动｜{exc}")
-                return
+        session_id = (
+            self._session_recorder.session_dir.name
+            if self._session_recorder is not None
+            else f"preview-{time.time_ns()}"
+        )
+        try:
+            self._open_trigger_router(session_id)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._close_trigger_router()
+            self._finish_session_recording(status="error", reason="trigger_initialization_failed")
+            QMessageBox.critical(self, "无法启动实验事件同步", str(exc))
+            self.stimulus_status.setText(f"未启动｜{exc}")
+            return
         try:
             self.stimulus_window.start_protocol(
                 self.paradigm_select.currentText(), screen, self.protocol_preset.currentText()
             )
         except (AudioUnavailableError, ValueError) as exc:
-            if td10_source is not None:
-                td10_source.stop_marker_outlet()
+            self._close_trigger_router()
             self._finish_session_recording(status="error", reason="stimulus_start_failed")
             QMessageBox.warning(self, "范式无法启动", str(exc))
             self.stimulus_status.setText(f"未启动｜{exc}")
@@ -637,7 +718,7 @@ class NeuroScopeWindow(QMainWindow):
         )
         self.stimulus_status.setText(
             f"运行中｜{self.protocol_preset.currentText()}｜{self.display_select.currentText()}｜"
-            f"软件时间戳同步｜Esc 可退出刺激{recording_text}"
+            f"{self.timing_mode.currentText()}｜Esc 可退出刺激{recording_text}"
         )
 
     def _stop_stimulus(self) -> None:
@@ -651,9 +732,12 @@ class NeuroScopeWindow(QMainWindow):
         ):
             status = "error"
             reason = "recording_error"
+        self._close_trigger_router()
+        if self._session_recorder is not None:
+            # Give the acquisition thread one final opportunity to drain the
+            # Neuracle Trigger channel before the recorder is detached.
+            time.sleep(0.1)
         session_dir = self._finish_session_recording(status=status, reason=reason)
-        if self.controller is not None and isinstance(self.controller.source, TD10LSLSource):
-            self.controller.source.stop_marker_outlet()
         summary = self.stimulus_window.summary()
         hit_rate = summary.get("behavior_accuracy", summary["behavior_hit_rate"])
         hit_rate_text = "—" if hit_rate is None else f"{hit_rate:.0%}"
@@ -666,20 +750,45 @@ class NeuroScopeWindow(QMainWindow):
 
     def _on_stimulus_event(self, event: StimulusEvent) -> None:
         lsl_time: float | None = None
-        if self.controller is not None and isinstance(self.controller.source, TD10LSLSource):
-            marker_payload = event.as_dict()
-            marker_payload["schema_version"] = 1
-            marker_payload["timing_status"] = "lsl_software_sync_uncalibrated"
+        dispatch = None
+        if self._trigger_router is not None:
             try:
-                marker = self.controller.source.publish_marker(
-                    marker_payload,
-                    retain_sidecar=self._session_recorder is None,
+                definition = event_code_for(
+                    event.paradigm,
+                    event.phase,
+                    event.payload,
+                    event.label,
                 )
-                lsl_time = marker.lsl_timestamp
+                dispatch = self._trigger_router.dispatch(
+                    TriggerRequest(
+                        paradigm=event.paradigm,
+                        phase=event.phase,
+                        label=event.label,
+                        payload=dict(event.payload),
+                        wall_time=event.wall_time,
+                        intent_time=event.intent_time or event.monotonic_time,
+                        onset_hook_time=event.onset_hook_time or event.monotonic_time,
+                        hook_type=event.hook_type,
+                    ),
+                    definition,
+                )
+                lsl_time = dispatch.lsl_timestamp
+                event.payload["trigger_timing"] = {
+                    "event_id": dispatch.event_id,
+                    "sequence": dispatch.sequence,
+                    "timing_mode": dispatch.timing_mode,
+                    "timing_status": dispatch.timing_status,
+                    "hardware_code": dispatch.hardware_code,
+                    "hardware_symbol": dispatch.hardware_symbol,
+                    "hardware_dispatch_time": dispatch.hardware_dispatch_time,
+                    "hardware_write_complete_time": dispatch.hardware_write_complete_time,
+                    "hardware_error": dispatch.hardware_error,
+                    "lsl_timestamp": dispatch.lsl_timestamp,
+                    "lsl_error": dispatch.lsl_error,
+                    "hook_type": dispatch.hook_type,
+                }
                 if self._session_recorder is not None:
-                    self._session_recorder.submit_sidecars(
-                        TD10Sidecars(neuroscope_markers=(marker,))
-                    )
+                    self._session_recorder.record_trigger_dispatch(dispatch)
             except (RuntimeError, RecordingError) as exc:
                 self.stimulus_status.setText(f"Marker 保存失败｜{exc}")
                 if event.phase != "stop" and self.stimulus_window.timer.isActive():
@@ -696,11 +805,16 @@ class NeuroScopeWindow(QMainWindow):
         self.stimulus_events.append(event)
         if self._session_recorder is not None:
             sample_index = int(event.payload["eeg_sample_index"])
+            is_td10 = self._session_recorder.metadata.source_type == "td10_lsl"
             try:
                 self._session_recorder.record_event(
                     event,
-                    eeg_sample_index=-1 if lsl_time is not None else sample_index,
-                    eeg_session_sec=-1.0 if lsl_time is not None else sample_index / self._session_recorder.sfreq,
+                    eeg_sample_index=-1 if is_td10 and lsl_time is not None else sample_index,
+                    eeg_session_sec=(
+                        -1.0
+                        if is_td10 and lsl_time is not None
+                        else sample_index / self._session_recorder.sfreq
+                    ),
                     lsl_time=lsl_time,
                 )
             except RecordingError as exc:
@@ -718,8 +832,9 @@ class NeuroScopeWindow(QMainWindow):
         recording_text = (
             f"｜正在写入 {self._session_recorder.session_dir}" if self._session_recorder is not None else ""
         )
+        timing_text = dispatch.timing_status if dispatch is not None else "未启用"
         self.stimulus_status.setText(
-            f"{event.paradigm}｜{stage}｜{event.phase}｜{event.label}｜软件同步{recording_text}"
+            f"{event.paradigm}｜{stage}｜{event.phase}｜{event.label}｜{timing_text}{recording_text}"
         )
 
     def _capture_protocol_reference(self, event: StimulusEvent) -> None:
@@ -978,14 +1093,13 @@ class NeuroScopeWindow(QMainWindow):
 
     def _stop_session(self) -> None:
         self._stop_stimulus()
+        self._close_trigger_router()
         self._finish_session_recording(status="aborted", reason="acquisition_stopped")
         self.wave_timer.stop()
         self.status_timer.stop()
         self.analysis_timer.stop()
         self.decoder_timer.stop()
         if self.controller is not None:
-            if isinstance(self.controller.source, TD10LSLSource):
-                self.controller.source.stop_marker_outlet()
             self.controller.stop()
         self.controller = None
         self._analysis_data = None

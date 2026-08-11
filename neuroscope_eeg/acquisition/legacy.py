@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.timing.models import HardwareTriggerSample
 from realtime_eeg_viewer import BrainCoSource as LegacyBrainCoSource
 from realtime_eeg_viewer import NeuracleSource as LegacyNeuracleSource
 
@@ -43,6 +44,12 @@ class LegacyRealtimeSource:
         sequence = self._sample
         self._sample += data.shape[1]
         return EEGChunk(metadata=self.metadata, data=data, timestamps=timestamps, sequence=sequence)
+
+    def drain_hardware_triggers(self) -> tuple[HardwareTriggerSample, ...]:
+        drain = getattr(self.legacy_source, "drain_hardware_triggers", None)
+        if not callable(drain):
+            return ()
+        return tuple(drain())
 
 
 def build_neuracle_source(

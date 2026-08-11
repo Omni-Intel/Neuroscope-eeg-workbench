@@ -16,6 +16,7 @@ from neuroscope_eeg.acquisition.td10_lsl import (
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.desktop.protocols import StimulusEvent
 from neuroscope_eeg.io.session_recorder import SessionRecorder
+from neuroscope_eeg.timing.models import HardwareTriggerSample, TriggerDispatch
 
 
 def test_recorder_creates_session_immediately_and_writes_readable_bdf(tmp_path: Path) -> None:
@@ -95,6 +96,54 @@ def test_recorder_preserves_partial_file_and_error_metadata_on_abort(tmp_path: P
     assert session["valid_samples"] == 4
     assert session["padded_samples"] == 6
     assert recorder.final_path.exists()
+
+
+def test_recorder_persists_trigger_audit_and_exports_sample_locked_excel(tmp_path: Path) -> None:
+    metadata = SourceMetadata.eeg("device-1", "neuracle", 1000.0, ("Fp1",))
+    recorder = SessionRecorder.start(
+        root_dir=tmp_path,
+        participant_id="S03",
+        paradigm="N-back 工作记忆",
+        preset="完整采集",
+        metadata=metadata,
+    )
+    recorder.configure_trigger_timing(mode="hardware_lsl", port="COM7", lsl_source_id="marker-source")
+    recorder.record_trigger_dispatch(
+        TriggerDispatch(
+            event_id="EVT-000001",
+            sequence=1,
+            session_id="session-1",
+            paradigm="N-back 工作记忆",
+            phase="nback_trial",
+            label="7",
+            payload={"nback_level": 1, "is_target": True, "block_index": 2, "trial_index": 17},
+            wall_time=1_786_400_000.0,
+            intent_time=1.0,
+            onset_hook_time=1.01,
+            hook_type="frame_swapped",
+            timing_mode="hardware_lsl",
+            timing_status="hardware_dispatched_unverified",
+            hardware_code=53,
+            hardware_symbol="NBACK_1_TARGET",
+            hardware_requested=True,
+            hardware_frame_hex="01 e1 01 00 35",
+            hardware_dispatch_time=1.011,
+            hardware_write_complete_time=1.012,
+            lsl_timestamp=10.02,
+        )
+    )
+    recorder.submit_hardware_triggers((HardwareTriggerSample(53, 1234, "TRIGGER"),))
+    recorder.stop(status="completed", reason="completed")
+
+    assert '"event_id":"EVT-000001"' in recorder.events_jsonl_path.read_text(encoding="utf-8")
+    assert '"sample_index":1234' in recorder.hardware_triggers_path.read_text(encoding="utf-8")
+    assert (recorder.session_dir / "event_codebook.xlsx").is_file()
+    assert (recorder.session_dir / "event_timeline.xlsx").is_file()
+    session = json.loads(recorder.session_path.read_text(encoding="utf-8"))
+    assert session["timing_status"] == "hardware_sample_locked"
+    assert session["trigger_dispatches"] == 1
+    assert session["hardware_trigger_samples"] == 1
+    assert session["trigger_export_error"] is None
 
 
 def test_recorder_rejects_unsafe_participant_id(tmp_path: Path) -> None:

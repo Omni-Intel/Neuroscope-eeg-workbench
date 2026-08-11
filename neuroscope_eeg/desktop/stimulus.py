@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from dataclasses import replace
 from itertools import accumulate
 import math
 import random
@@ -8,10 +9,10 @@ from statistics import median
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPaintEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPainter, QPixmap
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from neuroscope_eeg.desktop.audio import AudioPlayer
+from neuroscope_eeg.desktop.audio import AudioPlayer, AudioTimingEvent
 from neuroscope_eeg.desktop.emotion_assets import EmotionImage, load_emotion_manifest, select_emotion_images
 from neuroscope_eeg.desktop.protocols import (
     PRESETS,
@@ -34,8 +35,9 @@ from neuroscope_eeg.desktop.protocols import (
 )
 
 
-class StimulusWindow(QWidget):
+class StimulusWindow(QOpenGLWidget):
     event_emitted = Signal(object)
+    audio_timing = Signal(object)
     stopped = Signal()
 
     def __init__(self, audio_player=None) -> None:
@@ -47,6 +49,8 @@ class StimulusWindow(QWidget):
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
+        self.frameSwapped.connect(self._on_frame_swapped)
+        self.audio_timing.connect(self._on_audio_timing)
         self.paradigm = "SSVEP"
         self.preset_label = "快速演示"
         self.preset: ProtocolPreset = PRESETS[self.preset_label]
@@ -117,6 +121,7 @@ class StimulusWindow(QWidget):
         self.responses = 0
         self.missed_frames = 0
         self.stop_reason = "completed"
+        self._pending_frame_events: list[StimulusEvent] = []
 
     def start_protocol(self, paradigm: str, screen, preset_label: str = "快速演示") -> None:
         if paradigm in {"听觉 ASSR", "听觉 Oddball"} and self._audio_player is None:
@@ -144,6 +149,7 @@ class StimulusWindow(QWidget):
         self._feedback_text = ""
         self._task_started_at = self.started_at
         self.stop_reason = "completed"
+        self._pending_frame_events.clear()
         self._prepare_protocol()
         self.current_target = False
         self._responded_to_item = False
@@ -191,11 +197,13 @@ class StimulusWindow(QWidget):
             return
         self.stop_reason = reason
         final_payload = dict(self._current_payload)
+        final_payload["stop_reason"] = reason
         if self.paradigm == "情绪图片唤醒":
             final_payload.update(self._emotion_payload())
         final_payload.update(self.summary())
         self._emit("stop", self.paradigm, final_payload)
         self.timer.stop()
+        self._pending_frame_events.clear()
         self.hide()
         self.stopped.emit()
 
@@ -848,19 +856,23 @@ class StimulusWindow(QWidget):
             return
         key = "stimulation:40 Hz 调幅音"
         if key != self._last_phase:
-            if self._audio_player is not None:
-                self._audio_player.play_tone(1000.0, 20.0, modulation_hz=40.0)
-            self.trials += 1
-        self._set_phase(
-            "stimulation",
-            "40 Hz 调幅音",
-            {
+            payload = {
                 "cycle": cycle,
                 "target_frequency": 40.0,
                 "carrier_frequency": 1000.0,
                 "modulation_depth": 1.0,
-            },
-        )
+            }
+            self._last_phase = key
+            if self._audio_player is not None:
+                self._play_audio_with_events(
+                    1000.0,
+                    20.0,
+                    "stimulation",
+                    "40 Hz 调幅音",
+                    payload,
+                    modulation_hz=40.0,
+                )
+            self.trials += 1
 
     def _update_oddball(self, now: float) -> None:
         if self._oddball_index >= len(self._oddball_sequence):
@@ -881,8 +893,6 @@ class StimulusWindow(QWidget):
         if not practice:
             self.trials += 1
             self.targets += int(self.current_target)
-        if self._audio_player is not None:
-            self._audio_player.play_tone(frequency, 0.1)
         soa = self._oddball_soa[sequence_index]
         self._current_started_at = now
         self._current_payload = {
@@ -897,11 +907,14 @@ class StimulusWindow(QWidget):
             "correct_response": "J" if self.current_target else "None",
             "target_present": self.current_target,
         }
-        self._emit(
-            kind,
-            "偏差音" if self.current_target else "标准音",
-            self._current_payload,
-        )
+        if self._audio_player is not None:
+            self._play_audio_with_events(
+                frequency,
+                0.1,
+                kind,
+                "偏差音" if self.current_target else "标准音",
+                self._current_payload,
+            )
         self._last_phase = f"{kind}:{sequence_index}"
         self._next_tone_at = now + soa
 
@@ -912,7 +925,7 @@ class StimulusWindow(QWidget):
         self._last_phase = key
         self._emit(phase, label, payload or {})
 
-    def _emit(self, phase: str, label: str, payload: dict | None = None) -> None:
+    def _build_event(self, phase: str, label: str, payload: dict | None = None) -> StimulusEvent:
         event_payload = {
             "protocol_version": PROTOCOL_VERSION,
             "preset": self.preset_label,
@@ -922,18 +935,103 @@ class StimulusWindow(QWidget):
             **self.summary(),
             **dict(payload or {}),
         }
+        intent_time = time.monotonic()
+        return StimulusEvent(
+            monotonic_time=intent_time,
+            wall_time=time.time(),
+            paradigm=self.paradigm,
+            phase=phase,
+            label=label,
+            payload=event_payload,
+            intent_time=intent_time,
+            onset_hook_time=intent_time,
+            hook_type="input_callback" if phase == "response" else "software",
+        )
+
+    def _emit(self, phase: str, label: str, payload: dict | None = None) -> None:
+        event = self._build_event(phase, label, payload)
+        if self._is_frame_locked_event(phase):
+            self._pending_frame_events.append(event)
+        else:
+            self.event_emitted.emit(event)
+
+    def _play_audio_with_events(
+        self,
+        frequency_hz: float,
+        duration_sec: float,
+        phase: str,
+        label: str,
+        payload: dict,
+        *,
+        modulation_hz: float | None = None,
+    ) -> None:
+        if self._audio_player is None:
+            return
+        onset_event = self._build_event(phase, label, payload)
+        offset_event = self._build_event("audio_offset", "声音结束", payload)
+        self._audio_player.play_tone(
+            frequency_hz,
+            duration_sec,
+            modulation_hz=modulation_hz,
+            onset_callback=lambda timing: self.audio_timing.emit((onset_event, timing)),
+            completion_callback=lambda timing: self.audio_timing.emit((offset_event, timing)),
+        )
+
+    def _on_audio_timing(self, item: tuple[StimulusEvent, AudioTimingEvent]) -> None:
+        event, timing = item
+        payload = {
+            **event.payload,
+            "audio_output_dac_time": timing.output_dac_time,
+            "physical_onset_calibrated": False,
+        }
+        if event.paradigm == "听觉 Oddball" and event.phase in {"standard", "deviant"}:
+            self._current_started_at = timing.monotonic_time
         self.event_emitted.emit(
-            StimulusEvent(
-                monotonic_time=time.monotonic(),
+            replace(
+                event,
+                monotonic_time=timing.monotonic_time,
                 wall_time=time.time(),
-                paradigm=self.paradigm,
-                phase=phase,
-                label=label,
-                payload=event_payload,
+                payload=payload,
+                onset_hook_time=timing.monotonic_time,
+                hook_type="audio_output_buffer",
             )
         )
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+    def _is_frame_locked_event(self, phase: str) -> bool:
+        phases = {
+            "SSVEP": {"flicker", "rest"},
+            "运动想象": {"fixation", "cue", "rest"},
+            "视觉图像识别": {"stimulus", "stimulus_offset"},
+            "注意力": {"problem", "problem_offset", "rest"},
+            "静息睁眼/闭眼": {"eyes_open", "eyes_closed", "transition"},
+            "N-back 工作记忆": {"nback_trial", "nback_blank"},
+            "Stroop 色词冲突": {"stroop_stimulus", "stroop_blank"},
+            "情绪图片唤醒": {
+                "emotion_baseline",
+                "emotion_image",
+                "emotion_trial_complete",
+            },
+        }
+        return phase in phases.get(self.paradigm, set())
+
+    def _on_frame_swapped(self) -> None:
+        if not self._pending_frame_events:
+            return
+        pending, self._pending_frame_events = self._pending_frame_events, []
+        onset_time = time.monotonic()
+        wall_time = time.time()
+        for event in pending:
+            self.event_emitted.emit(
+                replace(
+                    event,
+                    monotonic_time=onset_time,
+                    wall_time=wall_time,
+                    onset_hook_time=onset_time,
+                    hook_type="frame_swapped",
+                )
+            )
+
+    def paintGL(self) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self.paradigm == "SSVEP":
@@ -1330,4 +1428,6 @@ class StimulusWindow(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self.stop_protocol("window_closed")
+        if self._audio_player is not None:
+            self._audio_player.close()
         event.accept()

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import threading
+import time
+from typing import Callable
+
 import numpy as np
 
 try:
@@ -13,6 +18,13 @@ DEFAULT_AUDIO_RATE = 48_000
 
 class AudioUnavailableError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class AudioTimingEvent:
+    stage: str
+    monotonic_time: float
+    output_dac_time: float | None
 
 
 def synthesize_tone(
@@ -56,6 +68,21 @@ class AudioPlayer:
             raise AudioUnavailableError("没有检测到可用的音频输出设备") from exc
         self.sample_rate = sample_rate
         self._samples: np.ndarray | None = None
+        self._position = 0
+        self._onset_callback: Callable[[AudioTimingEvent], None] | None = None
+        self._completion_callback: Callable[[AudioTimingEvent], None] | None = None
+        self._onset_sent = False
+        self._lock = threading.Lock()
+        try:
+            self._stream = sd.OutputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+        except Exception as exc:
+            raise AudioUnavailableError(f"无法打开持续音频输出流：{exc}") from exc
 
     def play_tone(
         self,
@@ -63,6 +90,8 @@ class AudioPlayer:
         duration_sec: float,
         *,
         modulation_hz: float | None = None,
+        onset_callback: Callable[[AudioTimingEvent], None] | None = None,
+        completion_callback: Callable[[AudioTimingEvent], None] | None = None,
     ) -> None:
         samples = synthesize_tone(
             frequency_hz,
@@ -70,15 +99,70 @@ class AudioPlayer:
             sample_rate=self.sample_rate,
             modulation_hz=modulation_hz,
         )
-        self.stop()
-        self._samples = samples
-        try:
-            sd.play(self._samples, self.sample_rate, blocking=False)
-        except Exception as exc:
-            self._samples = None
-            raise AudioUnavailableError(f"音频播放失败：{exc}") from exc
+        with self._lock:
+            self._samples = samples
+            self._position = 0
+            self._onset_callback = onset_callback
+            self._completion_callback = completion_callback
+            self._onset_sent = False
+
+    @staticmethod
+    def _dac_time(time_info) -> float | None:
+        value = (
+            time_info.get("outputBufferDacTime")
+            if isinstance(time_info, dict)
+            else getattr(time_info, "outputBufferDacTime", None)
+        )
+        return None if value is None else float(value)
+
+    def _audio_callback(self, outdata, frames: int, time_info, _status) -> None:
+        outdata.fill(0.0)
+        onset_callback = None
+        completion_callback = None
+        onset_event = None
+        completion_event = None
+        with self._lock:
+            if self._samples is None:
+                return
+            start = self._position
+            stop = min(len(self._samples), start + int(frames))
+            copied = max(0, stop - start)
+            if copied:
+                outdata[:copied, 0] = self._samples[start:stop]
+            dac_time = self._dac_time(time_info)
+            now = time.monotonic()
+            if copied and not self._onset_sent:
+                self._onset_sent = True
+                onset_callback = self._onset_callback
+                onset_event = AudioTimingEvent("onset", now, dac_time)
+            self._position = stop
+            if stop >= len(self._samples):
+                completion_callback = self._completion_callback
+                completion_dac_time = (
+                    None if dac_time is None else dac_time + copied / float(self.sample_rate)
+                )
+                completion_event = AudioTimingEvent("offset", now, completion_dac_time)
+                self._samples = None
+                self._position = 0
+                self._onset_callback = None
+                self._completion_callback = None
+        if onset_callback is not None and onset_event is not None:
+            onset_callback(onset_event)
+        if completion_callback is not None and completion_event is not None:
+            completion_callback(completion_event)
 
     def stop(self) -> None:
-        if sd is not None:
-            sd.stop()
-        self._samples = None
+        with self._lock:
+            self._samples = None
+            self._position = 0
+            self._onset_callback = None
+            self._completion_callback = None
+            self._onset_sent = False
+
+    def close(self) -> None:
+        self.stop()
+        try:
+            self._stream.stop()
+            self._stream.close()
+        except Exception:
+            return

@@ -43,7 +43,22 @@ python3.12 -m venv .venv312
 
 情绪图片流程包含内容提示、20 秒中性基线，以及每张图片前 1 秒注视、6 秒图片和 1 秒空屏，不进行效价或唤醒评分。七个细分类为愉悦、厌恶、恐惧、鼓舞、中性、悲伤、温情，每类 15 张；完整采集在第 35 和第 70 张后休息。素材为公司自有素材，不标注为 IAPS。按 `S` 可以跳过当前图片。
 
-当前刺激事件使用同机 LSL `local_clock()` 软件时间戳同步。它能消除用“已提交样本数”猜事件位置的问题，但不是显示器、音频或头环采样链路的物理 Trigger；界面中的“候选分离度”和“趋势分”不是模型准确率；SSVEP 只有完成带提示目标的试次后才显示本会话试次匹配率。
+刺激事件支持两种同步模式：推荐的“博睿康硬件 + LSL”会先通过 NDE0001 串口按 DCP 立即事件命令 `01 E1 01 00 XX` 发码，再发布同一事件的通用 LSL Marker；“仅 LSL”用于没有 TriggerBox 的预览。视觉关键事件在 `frameSwapped` 后发码，听觉关键事件在首个音频输出缓冲回调发码。博睿康 Trigger/Event 通道里实际收到的码会按采样点回配，只有成功配对的事件才标记为 `hardware_sample_locked`。当前设备没有光电二极管或音频回环，因此不能把软件显示/音频 hook 当成已校准的物理起始时刻；界面中的“候选分离度”和“趋势分”也不是模型准确率。
+
+完整采集的会话目录会额外生成：
+
+- `event_codebook.xlsx` / `event_codebook.json`：硬件码、符号名、范式、阶段和中文含义的固定对照；
+- `event_timeline.xlsx`：每个事件的直接时间戳、DCP 写入时间、LSL 时间、Trigger 通道采样点、配对状态和同步等级；
+- `events.jsonl`、`triggerbox_log.jsonl`、`lsl_markers.jsonl`、`hardware_triggers.jsonl`：不依赖 Excel 的原始审计记录；
+- `synchronization_summary.json`：硬件事件缺失、乱序、发送失败及硬件/LSL差值摘要。
+
+硬件模式启动时会先发送校准码 `120`，实验员必须在博睿康采集界面确认收到后才能继续。串口固定为 115200、8N1、无流控；设备自描述必须包含 `TriggerBox.Titing`。正式采集前可运行全码表台架自检：
+
+```bash
+neuroscope-trigger-bench --port COM5 --output trigger-bench-output
+```
+
+macOS/Linux 串口可写成 `/dev/cu.usbserial-xxx`。自检会逐个发送码表中的全部事件码并输出 `trigger_bench.csv/json`；仍需在博睿康端核对码值和顺序。
 
 听觉 ASSR 每轮使用 10 秒安静基线和 20 秒 1000 Hz 载波、40 Hz 100% 调幅音，快速/完整预设分别自动运行 3/10 轮。听觉 Oddball 使用 80% 标准音和 20% 偏差音，声音起始间隔为 1200–1600 ms，听到偏差音时按 `J`。两项听觉任务建议准备同一副舒适音量的有线双耳耳机。尚未校准设备时间戳与电脑音频/显示延迟时，Oddball 的 N1/MMN 类差异/靶音晚期正波以及 Stroop 的 N2 类趋势均只显示“ERP 时序待校准”，不输出确证数值。
 

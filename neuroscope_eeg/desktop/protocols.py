@@ -441,6 +441,9 @@ class StimulusEvent:
     phase: str
     label: str
     payload: dict[str, Any] = field(default_factory=dict)
+    intent_time: float | None = None
+    onset_hook_time: float | None = None
+    hook_type: str = "software"
 
     def as_dict(self) -> dict[str, Any]:
         result = asdict(self)

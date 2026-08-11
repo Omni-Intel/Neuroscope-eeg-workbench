@@ -18,6 +18,12 @@ import numpy as np
 from neuroscope_eeg.acquisition.td10_lsl import TD10Sidecars
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.desktop.protocols import PROTOCOL_VERSION, TIMING_STATUS, StimulusEvent
+from neuroscope_eeg.io.trigger_export import export_trigger_artifacts
+from neuroscope_eeg.timing.models import (
+    HardwareTriggerBatch,
+    HardwareTriggerSample,
+    TriggerDispatch,
+)
 
 
 _PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -36,6 +42,9 @@ _PARADIGM_SLUGS = {
 _EVENT_FIELDS = (
     "monotonic_time",
     "wall_time",
+    "intent_time",
+    "onset_hook_time",
+    "hook_type",
     "lsl_time",
     "eeg_session_sec",
     "eeg_sample_index",
@@ -124,6 +133,10 @@ class SessionRecorder:
         self.ifet_markers_path = session_dir / "ifet_markers.jsonl"
         self.neuroscope_markers_path = session_dir / "neuroscope_markers.jsonl"
         self.clock_corrections_path = session_dir / "clock_corrections.jsonl"
+        self.events_jsonl_path = session_dir / "events.jsonl"
+        self.triggerbox_log_path = session_dir / "triggerbox_log.jsonl"
+        self.lsl_markers_path = session_dir / "lsl_markers.jsonl"
+        self.hardware_triggers_path = session_dir / "hardware_triggers.jsonl"
         self.participant_id = participant_id
         self.paradigm = paradigm
         self.preset = preset
@@ -148,13 +161,25 @@ class SessionRecorder:
         self._clock_corrections_written = 0
         self._clock_correction_values: dict[str, list[float]] = {}
         self._timing_health: dict[str, Any] = {}
+        self._timing_config: dict[str, Any] = {
+            "enabled": False,
+            "mode": "",
+            "port": "",
+            "lsl_source_id": "",
+            "physical_onset_calibrated": False,
+        }
+        self._trigger_dispatches: list[TriggerDispatch] = []
+        self._hardware_triggers: list[HardwareTriggerSample] = []
+        self._synchronization_summary: dict[str, Any] = {}
+        self._trigger_export_error: str | None = None
         self._submitted_samples = 0
         self._queued_samples = 0
         self._max_queue_depth = 0
         self._queue_capacity_samples = max(self.sfreq * 10, self.sfreq)
-        self._queue: Queue[np.ndarray | TD10Sidecars | None] = Queue()
+        self._queue: Queue[np.ndarray | TD10Sidecars | HardwareTriggerBatch | None] = Queue()
         self._lock = threading.Lock()
         self._events_lock = threading.Lock()
+        self._trigger_lock = threading.Lock()
         self._accepting = True
         self._stopped = False
 
@@ -163,6 +188,12 @@ class SessionRecorder:
         self._events_writer = csv.DictWriter(self._events_handle, fieldnames=_EVENT_FIELDS)
         self._events_writer.writeheader()
         self._events_handle.flush()
+        self._trigger_handles = {
+            "events": self.events_jsonl_path.open("w", encoding="utf-8"),
+            "triggerbox": self.triggerbox_log_path.open("w", encoding="utf-8"),
+            "lsl": self.lsl_markers_path.open("w", encoding="utf-8"),
+            "hardware": self.hardware_triggers_path.open("w", encoding="utf-8"),
+        }
         self._sidecar_handles: dict[str, Any] = {}
         if metadata.source_type == "td10_lsl":
             self._sidecar_handles = {
@@ -311,6 +342,58 @@ class SessionRecorder:
                 raise RecordingError("记录器已停止接收数据")
         self._queue.put_nowait(sidecars)
 
+    def configure_trigger_timing(
+        self,
+        *,
+        mode: str,
+        port: str = "",
+        lsl_source_id: str = "",
+    ) -> None:
+        if mode not in {"hardware_lsl", "lsl_only"}:
+            raise ValueError("mode must be hardware_lsl or lsl_only")
+        with self._trigger_lock:
+            self._timing_config.update(
+                {
+                    "enabled": True,
+                    "mode": mode,
+                    "port": str(port),
+                    "lsl_source_id": str(lsl_source_id),
+                    "physical_onset_calibrated": False,
+                }
+            )
+
+    def record_trigger_dispatch(self, dispatch: TriggerDispatch) -> None:
+        if not isinstance(dispatch, TriggerDispatch):
+            raise TypeError("dispatch must be a TriggerDispatch")
+        payload = dispatch.as_dict()
+        with self._trigger_lock:
+            if self._trigger_handles["events"].closed:
+                raise RecordingError("Trigger 事件文件已经关闭")
+            try:
+                self._write_trigger_jsonl("events", payload)
+                if dispatch.hardware_requested or dispatch.hardware_error:
+                    self._write_trigger_jsonl("triggerbox", payload)
+                if dispatch.lsl_timestamp is not None or dispatch.lsl_error:
+                    self._write_trigger_jsonl("lsl", payload)
+            except Exception as exc:
+                self._set_error(f"写入 Trigger 审计日志失败：{exc}")
+                raise RecordingError(self.error or str(exc)) from exc
+            self._trigger_dispatches.append(dispatch)
+
+    def submit_hardware_triggers(
+        self,
+        samples: tuple[HardwareTriggerSample, ...] | list[HardwareTriggerSample],
+    ) -> None:
+        batch = HardwareTriggerBatch(tuple(samples))
+        if batch.is_empty:
+            return
+        with self._lock:
+            if self.error:
+                raise RecordingError(self.error)
+            if not self._accepting:
+                raise RecordingError("记录器已停止接收数据")
+        self._queue.put_nowait(batch)
+
     def record_event(
         self,
         event: StimulusEvent,
@@ -320,14 +403,23 @@ class SessionRecorder:
         lsl_time: float | None = None,
     ) -> None:
         row = event.as_dict()
+        if lsl_time is None:
+            alignment_method = "sample_counter"
+            alignment_status = "legacy"
+        elif self.metadata.source_type == "td10_lsl":
+            alignment_method = "pending"
+            alignment_status = "pending"
+        else:
+            alignment_method = "sample_counter_approximate_with_lsl_audit"
+            alignment_status = "unverified"
         row.update(
             {
                 "eeg_session_sec": float(eeg_session_sec),
                 "eeg_sample_index": int(eeg_sample_index),
                 "lsl_time": "" if lsl_time is None else float(lsl_time),
-                "alignment_method": "pending" if lsl_time is not None else "sample_counter",
+                "alignment_method": alignment_method,
                 "alignment_error_ms": "",
-                "alignment_status": "pending" if lsl_time is not None else "legacy",
+                "alignment_status": alignment_status,
                 "is_practice": bool(event.payload.get("is_practice", False)),
                 "payload": json.dumps(row["payload"], ensure_ascii=False, separators=(",", ":")),
             }
@@ -365,12 +457,26 @@ class SessionRecorder:
             except Exception as exc:
                 self._set_error(f"关闭事件文件失败：{exc}")
         self._close_sidecars()
+        self._close_trigger_logs()
         if not self.error and self.metadata.source_type == "td10_lsl" and self._submitted_samples:
             try:
                 self._finalize_td10_sidecars()
                 self._realign_events()
             except Exception as exc:
                 self._set_error(f"完成 TD10 时间轴失败：{exc}")
+        if self._timing_config.get("enabled"):
+            try:
+                exported = export_trigger_artifacts(
+                    self.session_dir,
+                    self._trigger_dispatches,
+                    self._hardware_triggers,
+                    sfreq=self.metadata.sfreq,
+                    timing_config=self._timing_config,
+                    source_sample_offset=self.source_sample_offset,
+                )
+                self._synchronization_summary = dict(exported["summary"])
+            except Exception as exc:
+                self._trigger_export_error = str(exc)
         self.ended_at = datetime.now(timezone.utc)
         final_status = "error" if self.error else status
         final_reason = "recording_error" if self.error else reason
@@ -393,6 +499,9 @@ class SessionRecorder:
                 if isinstance(item, TD10Sidecars):
                     self._write_sidecars(item)
                     continue
+                if isinstance(item, HardwareTriggerBatch):
+                    self._write_hardware_triggers(item)
+                    continue
                 with self._lock:
                     self._queued_samples -= item.shape[1]
                     self._chunks_written += 1
@@ -408,6 +517,24 @@ class SessionRecorder:
                 self._padded_samples = self.sfreq - valid
         except Exception as exc:
             self._set_error(f"写入 BDF 失败：{exc}")
+
+    def _write_hardware_triggers(self, batch: HardwareTriggerBatch) -> None:
+        with self._trigger_lock:
+            for sample in batch.samples:
+                self._write_trigger_jsonl(
+                    "hardware",
+                    {
+                        "code": sample.code,
+                        "sample_index": sample.sample_index,
+                        "channel_name": sample.channel_name,
+                    },
+                )
+                self._hardware_triggers.append(sample)
+
+    def _write_trigger_jsonl(self, handle_name: str, payload: dict[str, Any]) -> None:
+        handle = self._trigger_handles[handle_name]
+        handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        handle.flush()
 
     def _write_sidecars(self, sidecars: TD10Sidecars) -> None:
         if not self._sidecar_handles:
@@ -470,6 +597,14 @@ class SessionRecorder:
                 handle.close()
             except Exception as exc:
                 self._set_error(f"关闭 TD10 sidecar 失败：{exc}")
+
+    def _close_trigger_logs(self) -> None:
+        for handle in self._trigger_handles.values():
+            try:
+                handle.flush()
+                handle.close()
+            except Exception as exc:
+                self._set_error(f"关闭 Trigger 审计日志失败：{exc}")
 
     def _finalize_td10_sidecars(self) -> None:
         if self._eeg_timing_samples != self._submitted_samples:
@@ -656,11 +791,19 @@ class SessionRecorder:
             "nonfinite_samples": getattr(self, "_nonfinite_samples", 0),
             "clipped_samples": getattr(self, "_clipped_samples", 0),
             "max_queue_depth": self._max_queue_depth,
-            "timing_status": (
-                "lsl_software_sync_uncalibrated"
-                if self.metadata.source_type == "td10_lsl"
-                else TIMING_STATUS
+            "timing_status": self._synchronization_summary.get(
+                "overall_timing_status",
+                (
+                    "lsl_software_sync_uncalibrated"
+                    if self.metadata.source_type == "td10_lsl"
+                    else TIMING_STATUS
+                ),
             ),
+            "trigger_timing": dict(self._timing_config),
+            "synchronization_summary": dict(self._synchronization_summary),
+            "trigger_dispatches": len(self._trigger_dispatches),
+            "hardware_trigger_samples": len(self._hardware_triggers),
+            "trigger_export_error": self._trigger_export_error,
             "eeg_timing_samples": self._eeg_timing_samples,
             "quality_samples": self._quality_samples,
             "quality_invalid_samples": self._quality_invalid_samples,

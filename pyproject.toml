@@ -23,6 +23,8 @@ dev = [
 ]
 brainco = ["bcigo-sdk==1.0.2"]
 desktop = [
+  "openpyxl>=3.1,<4",
+  "pyserial>=3.5,<4",
   "PySide6-Essentials>=6.7,<6.11",
   "pyedflib>=0.1.40,<0.2",
   "pylsl==1.18.2",
@@ -34,6 +36,7 @@ desktop = [
 neuroscope-doctor = "neuroscope_eeg.diagnostics.environment:main"
 neuroscope-bundle = "neuroscope_eeg.io.diagnostic_bundle:main"
 neuroscope-desktop = "neuroscope_eeg.desktop.app:main"
+neuroscope-trigger-bench = "neuroscope_eeg.timing.bench:main"
 
 [tool.setuptools.packages.find]
 include = ["neuroscope_eeg*"]

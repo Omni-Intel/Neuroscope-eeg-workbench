@@ -20,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+from neuroscope_eeg.timing.models import HardwareTriggerSample
+
 
 DEFAULT_64_CH_NAMES = [
     "Fp1",
@@ -258,6 +260,12 @@ class NeuracleSource:
         self.ready_timeout_sec = ready_timeout_sec
         self.server = None
         self.eeg_indices: list[int] = list(range(n_channels))
+        self.trigger_indices: list[int] = []
+        self.trigger_names: list[str] = []
+        self._stream_sample = 0
+        self._trigger_last_values: dict[int, int] = {}
+        self._hardware_triggers: list[HardwareTriggerSample] = []
+        self._trigger_lock = threading.Lock()
         self.metadata = SourceMetadata(
             name="neuracle",
             sfreq=sfreq,
@@ -280,9 +288,18 @@ class NeuracleSource:
 
         channel_names = list(getattr(self.server, "channelNames", []))
         channel_types = [str(x).upper() for x in getattr(self.server, "channelTypes", [])]
+        trigger_types = {"TRIGGER", "STIM", "MARKER", "EVENT"}
+        self.trigger_indices = [
+            index
+            for index, name in enumerate(channel_names)
+            if (index < len(channel_types) and channel_types[index] in trigger_types)
+            or any(token in str(name).upper() for token in trigger_types)
+        ]
+        self.trigger_names = [str(channel_names[index]) for index in self.trigger_indices]
         eeg_indices = [i for i, kind in enumerate(channel_types) if kind == "EEG"]
         if not eeg_indices:
-            eeg_indices = list(range(min(self.requested_channels, len(channel_names) or self.requested_channels)))
+            available = len(channel_names) or self.requested_channels
+            eeg_indices = [index for index in range(available) if index not in self.trigger_indices]
         self.eeg_indices = eeg_indices[: self.requested_channels]
 
         if channel_names:
@@ -290,6 +307,10 @@ class NeuracleSource:
         else:
             names = DEFAULT_64_CH_NAMES[: len(self.eeg_indices)]
         self.metadata = SourceMetadata(name="neuracle", sfreq=self.sfreq, channel_names=names)
+        self._stream_sample = 0
+        self._trigger_last_values = {index: 0 for index in self.trigger_indices}
+        with self._trigger_lock:
+            self._hardware_triggers.clear()
         self.server.start()
 
     def stop(self) -> None:
@@ -305,7 +326,32 @@ class NeuracleSource:
             return np.empty((len(self.eeg_indices), 0), dtype=np.float32)
         if data.shape[0] <= max(self.eeg_indices):
             raise RuntimeError(f"stream has {data.shape[0]} channels, expected index {max(self.eeg_indices)}")
+        sample_count = int(data.shape[1])
+        detected: list[HardwareTriggerSample] = []
+        for index, name in zip(self.trigger_indices, self.trigger_names):
+            if index >= data.shape[0]:
+                continue
+            last = self._trigger_last_values.get(index, 0)
+            for offset, raw_value in enumerate(np.asarray(data[index]).reshape(-1)):
+                if not np.isfinite(raw_value):
+                    code = 0
+                else:
+                    code = int(round(float(raw_value)))
+                if code != 0 and code != last:
+                    detected.append(HardwareTriggerSample(code, self._stream_sample + offset, name))
+                last = code
+            self._trigger_last_values[index] = last
+        self._stream_sample += sample_count
+        if detected:
+            with self._trigger_lock:
+                self._hardware_triggers.extend(detected)
         return np.asarray(data[self.eeg_indices], dtype=np.float32)
+
+    def drain_hardware_triggers(self) -> tuple[HardwareTriggerSample, ...]:
+        with self._trigger_lock:
+            result = tuple(self._hardware_triggers)
+            self._hardware_triggers.clear()
+        return result
 
 
 class BrainCoSource:

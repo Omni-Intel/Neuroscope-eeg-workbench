@@ -57,6 +57,10 @@ class SessionController:
                 chunk: EEGChunk = self.source.read_chunk()
                 drain_sidecars = getattr(self.source, "drain_sidecars", None)
                 sidecars = drain_sidecars() if callable(drain_sidecars) else None
+                drain_hardware_triggers = getattr(self.source, "drain_hardware_triggers", None)
+                hardware_triggers = (
+                    tuple(drain_hardware_triggers()) if callable(drain_hardware_triggers) else ()
+                )
                 with self._recorder_lock:
                     if chunk.n_samples > 0:
                         if self._recorder is not None:
@@ -64,6 +68,11 @@ class SessionController:
                     submit_sidecars = getattr(self._recorder, "submit_sidecars", None)
                     if sidecars is not None and callable(submit_sidecars):
                         submit_sidecars(sidecars)
+                    submit_hardware_triggers = getattr(
+                        self._recorder, "submit_hardware_triggers", None
+                    )
+                    if hardware_triggers and callable(submit_hardware_triggers):
+                        submit_hardware_triggers(hardware_triggers)
                 self.buffer.append(chunk)
                 if chunk.n_samples > 0:
                     self.chunks_received += 1
