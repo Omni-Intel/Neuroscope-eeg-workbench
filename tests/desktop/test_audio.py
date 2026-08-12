@@ -59,9 +59,9 @@ def test_audio_player_reports_first_output_buffer_once_and_reports_offset(monkey
     )
     stream = FakeSoundDevice.stream
     assert stream is not None and stream.started
-    first = np.zeros((4, 1), dtype=np.float32)
+    first = np.zeros((4, 2), dtype=np.float32)
     stream.callback(first, 4, {"outputBufferDacTime": 20.0}, None)
-    second = np.zeros((4, 1), dtype=np.float32)
+    second = np.zeros((4, 2), dtype=np.float32)
     stream.callback(second, 4, {"outputBufferDacTime": 20.004}, None)
     assert len(onsets) == 1
     assert onsets[0].stage == "onset"
@@ -72,6 +72,46 @@ def test_audio_player_reports_first_output_buffer_once_and_reports_offset(monkey
     assert np.any(first != 0.0) or np.any(second != 0.0)
     player.close()
     assert stream.closed
+
+
+def test_audio_player_routes_assr_tone_to_requested_ear(monkeypatch) -> None:
+    class FakeStream:
+        def __init__(self, **kwargs) -> None:
+            self.callback = kwargs["callback"]
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeSoundDevice:
+        stream: FakeStream | None = None
+
+        @staticmethod
+        def query_devices(kind: str):
+            return {"name": "fake"}
+
+        @classmethod
+        def OutputStream(cls, **kwargs):  # noqa: N802
+            cls.stream = FakeStream(**kwargs)
+            return cls.stream
+
+    monkeypatch.setattr(audio_module, "sd", FakeSoundDevice)
+    player = AudioPlayer(sample_rate=1000)
+    for condition, active_channel in (("left", 0), ("right", 1), ("binaural", None)):
+        player.play_tone(100.0, 0.004, channels=condition)
+        output = np.zeros((4, 2), dtype=np.float32)
+        assert FakeSoundDevice.stream is not None
+        FakeSoundDevice.stream.callback(output, 4, {}, None)
+        if active_channel is None:
+            assert np.any(output[:, 0]) and np.any(output[:, 1])
+        else:
+            assert np.any(output[:, active_channel])
+            assert not np.any(output[:, 1 - active_channel])
 
 
 def test_oddball_sequence_is_repeatable_balanced_and_never_adjacent() -> None:
