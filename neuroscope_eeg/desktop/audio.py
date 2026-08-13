@@ -71,13 +71,12 @@ class AudioPlayer:
         self._position = 0
         self._onset_callback: Callable[[AudioTimingEvent], None] | None = None
         self._completion_callback: Callable[[AudioTimingEvent], None] | None = None
-        self._channels = "binaural"
         self._onset_sent = False
         self._lock = threading.Lock()
         try:
             self._stream = sd.OutputStream(
                 samplerate=self.sample_rate,
-                channels=2,
+                channels=1,
                 dtype="float32",
                 callback=self._audio_callback,
             )
@@ -91,12 +90,9 @@ class AudioPlayer:
         duration_sec: float,
         *,
         modulation_hz: float | None = None,
-        channels: str = "binaural",
         onset_callback: Callable[[AudioTimingEvent], None] | None = None,
         completion_callback: Callable[[AudioTimingEvent], None] | None = None,
     ) -> None:
-        if channels not in {"binaural", "right", "left"}:
-            raise ValueError("channels must be binaural, right, or left")
         samples = synthesize_tone(
             frequency_hz,
             duration_sec,
@@ -108,7 +104,6 @@ class AudioPlayer:
             self._position = 0
             self._onset_callback = onset_callback
             self._completion_callback = completion_callback
-            self._channels = channels
             self._onset_sent = False
 
     @staticmethod
@@ -133,10 +128,7 @@ class AudioPlayer:
             stop = min(len(self._samples), start + int(frames))
             copied = max(0, stop - start)
             if copied:
-                if self._channels in {"binaural", "left"}:
-                    outdata[:copied, 0] = self._samples[start:stop]
-                if self._channels in {"binaural", "right"}:
-                    outdata[:copied, 1] = self._samples[start:stop]
+                outdata[:copied, 0] = self._samples[start:stop]
             dac_time = self._dac_time(time_info)
             now = time.monotonic()
             if copied and not self._onset_sent:
