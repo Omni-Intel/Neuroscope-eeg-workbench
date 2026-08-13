@@ -568,7 +568,7 @@ class NeuroScopeWindow(QMainWindow):
             f"自有图片 7 类 × {preset.emotion_per_category} 张 = {emotion_total} 张｜1s 注视 + 6s 图片 + 1s 空屏｜无评分"
         )
         self.assr_protocol.setText(
-            f"{preset.assr_cycles} 轮 ×（10s 安静 + 20s 40 Hz 调幅音）｜T3(T7)/T4(T8) 频率跟随与 SNR"
+            f"双耳、右耳、左耳各 {preset.assr_cycles} trial（共 {preset.assr_cycles * 3}；5s 安静 + 20s 40 Hz 调幅音）｜T3(T7)/T4(T8) 频率跟随与 SNR"
         )
         self.oddball_protocol.setText(
             f"10 个练习 + {preset.oddball_trials} 个正式声音｜80% 标准音 + 20% 偏差音｜高音按 J｜ERP 时序待校准"

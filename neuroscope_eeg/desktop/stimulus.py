@@ -26,6 +26,7 @@ from neuroscope_eeg.desktop.protocols import (
     StroopTrial,
     balanced_accuracy,
     frame_locked_frequencies,
+    generate_assr_sequence,
     generate_nback_schedule,
     generate_oddball_sequence,
     generate_oddball_soa,
@@ -84,6 +85,7 @@ class StimulusWindow(QOpenGLWidget):
         self._oddball_sequence = generate_oddball_sequence(1000)
         self._oddball_soa = generate_oddball_soa(1000)
         self._oddball_index = 0
+        self._assr_sequence: tuple[str, ...] = ()
         self._next_tone_at = 0.0
         self._false_alarms = 0
         self._current_started_at = 0.0
@@ -141,6 +143,7 @@ class StimulusWindow(QOpenGLWidget):
         self._last_problem_at = 0.0
         self._ssvep_target_index = 0
         self._oddball_index = 0
+        self._assr_sequence = generate_assr_sequence(self.preset.assr_cycles)
         self._next_tone_at = self.started_at + 1.0
         self._false_alarms = 0
         self._current_started_at = 0.0
@@ -843,22 +846,30 @@ class StimulusWindow(QOpenGLWidget):
         }
 
     def _update_assr(self, elapsed: float) -> None:
-        cycle = int(elapsed // 30.0)
-        if cycle >= self.preset.assr_cycles:
+        trial_index = int(elapsed // 25.0)
+        if trial_index >= len(self._assr_sequence):
             self.stop_protocol()
             return
-        within = elapsed % 30.0
-        if within < 10.0:
+        within = elapsed % 25.0
+        condition = self._assr_sequence[trial_index]
+        ear = "both" if condition == "binaural" else condition
+        trial_payload = {
+            "cycle": trial_index,
+            "trial_index": trial_index,
+            "condition": condition,
+            "ear": ear,
+            "target_frequency": 40.0,
+        }
+        if within < 5.0:
             key = "baseline:安静基线"
             if key != self._last_phase and self._audio_player is not None:
                 self._audio_player.stop()
-            self._set_phase("baseline", "安静基线", {"cycle": cycle, "target_frequency": 40.0})
+            self._set_phase("baseline", "安静基线", trial_payload)
             return
         key = "stimulation:40 Hz 调幅音"
         if key != self._last_phase:
             payload = {
-                "cycle": cycle,
-                "target_frequency": 40.0,
+                **trial_payload,
                 "carrier_frequency": 1000.0,
                 "modulation_depth": 1.0,
             }
@@ -871,6 +882,7 @@ class StimulusWindow(QOpenGLWidget):
                     "40 Hz 调幅音",
                     payload,
                     modulation_hz=40.0,
+                    output_condition=condition,
                 )
             self.trials += 1
 
@@ -964,6 +976,7 @@ class StimulusWindow(QOpenGLWidget):
         payload: dict,
         *,
         modulation_hz: float | None = None,
+        output_condition: str = "binaural",
     ) -> None:
         if self._audio_player is None:
             return
@@ -973,6 +986,7 @@ class StimulusWindow(QOpenGLWidget):
             frequency_hz,
             duration_sec,
             modulation_hz=modulation_hz,
+            output_condition=output_condition,
             onset_callback=lambda timing: self.audio_timing.emit((onset_event, timing)),
             completion_callback=lambda timing: self.audio_timing.emit((offset_event, timing)),
         )

@@ -3,6 +3,7 @@ from neuroscope_eeg.desktop.protocols import (
     StimulusEvent,
     balanced_accuracy,
     frame_locked_frequencies,
+    generate_assr_sequence,
     generate_nback_blocks,
     generate_nback_schedule,
     generate_nback_trials,
@@ -30,7 +31,7 @@ def test_stimulus_event_serializes_payload() -> None:
 def test_protocol_presets_have_expected_trial_counts() -> None:
     assert PRESETS["快速演示"].rest_duration_sec == 30
     assert PRESETS["快速演示"].rest_repetitions == 1
-    assert PRESETS["快速演示"].assr_cycles == 3
+    assert PRESETS["快速演示"].assr_cycles == 2
     assert PRESETS["快速演示"].nback_blocks_per_level == 1
     assert PRESETS["快速演示"].nback_trials_per_block == 10
     assert PRESETS["快速演示"].nback_targets_per_block == 3
@@ -40,7 +41,7 @@ def test_protocol_presets_have_expected_trial_counts() -> None:
     assert PRESETS["快速演示"].emotion_per_category == 3
     assert PRESETS["完整采集"].rest_duration_sec == 60
     assert PRESETS["完整采集"].rest_repetitions == 2
-    assert PRESETS["完整采集"].assr_cycles == 10
+    assert PRESETS["完整采集"].assr_cycles == 12
     assert PRESETS["完整采集"].nback_blocks_per_level == 4
     assert PRESETS["完整采集"].nback_trials_per_block == 40
     assert PRESETS["完整采集"].nback_targets_per_block == 13
@@ -48,6 +49,14 @@ def test_protocol_presets_have_expected_trial_counts() -> None:
     assert PRESETS["完整采集"].stroop_trials == 120
     assert PRESETS["完整采集"].oddball_trials == 300
     assert PRESETS["完整采集"].emotion_per_category == 15
+
+
+def test_assr_sequence_is_balanced_repeatable_and_interleaved_by_block() -> None:
+    sequence = generate_assr_sequence(12, seed=17)
+    assert len(sequence) == 36
+    assert sequence == generate_assr_sequence(12, seed=17)
+    assert all(set(sequence[start : start + 3]) == {"binaural", "right", "left"} for start in range(0, 36, 3))
+    assert all(sequence.count(condition) == 12 for condition in ("binaural", "right", "left"))
 
 
 def test_nback_sequences_have_exact_planned_targets_without_accidental_matches() -> None:
