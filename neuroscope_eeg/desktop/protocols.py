@@ -28,9 +28,25 @@ class ProtocolPreset:
         return len(NBACK_LEVELS) * self.nback_blocks_per_level * self.nback_targets_per_block
 
 
+ASSR_CONDITIONS = ("binaural", "right", "left")
+
+
+def generate_assr_sequence(trials_per_condition: int, *, seed: int = 17) -> tuple[str, ...]:
+    """Generate balanced ASSR conditions in randomized three-trial blocks."""
+    if trials_per_condition <= 0:
+        raise ValueError("trials_per_condition must be positive")
+    rng = random.Random(seed)
+    sequence: list[str] = []
+    for _ in range(trials_per_condition):
+        block = list(ASSR_CONDITIONS)
+        rng.shuffle(block)
+        sequence.extend(block)
+    return tuple(sequence)
+
+
 PRESETS: dict[str, ProtocolPreset] = {
-    "快速演示": ProtocolPreset("快速演示", 30, 1, 3, 1, 10, 3, 30, 100, 3),
-    "完整采集": ProtocolPreset("完整采集", 60, 2, 10, 4, 40, 13, 120, 300, 15),
+    "快速演示": ProtocolPreset("快速演示", 30, 1, 2, 1, 10, 3, 30, 100, 3),
+    "完整采集": ProtocolPreset("完整采集", 60, 2, 12, 4, 40, 13, 120, 300, 15),
 }
 
 PROTOCOL_VERSION = "2026.08.11"
