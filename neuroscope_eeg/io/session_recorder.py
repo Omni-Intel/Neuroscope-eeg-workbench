@@ -148,6 +148,7 @@ class SessionRecorder:
         self.started_at = datetime.now(timezone.utc)
         self.ended_at: datetime | None = None
         self.error: str | None = None
+        self.protocol_seed: int | None = None
         self._valid_samples = 0
         self._padded_samples = 0
         self._chunks_written = 0
@@ -402,6 +403,8 @@ class SessionRecorder:
         eeg_session_sec: float,
         lsl_time: float | None = None,
     ) -> None:
+        if event.phase == "start" and event.payload.get("seed") is not None:
+            self.protocol_seed = int(event.payload["seed"])
         row = event.as_dict()
         if lsl_time is None:
             alignment_method = "sample_counter"
@@ -771,6 +774,7 @@ class SessionRecorder:
             "paradigm": self.paradigm,
             "preset": self.preset,
             "protocol_version": PROTOCOL_VERSION,
+            "protocol_seed": self.protocol_seed,
             "source_id": self.metadata.source_id,
             "source_type": self.metadata.source_type,
             "sfreq": self.metadata.sfreq,

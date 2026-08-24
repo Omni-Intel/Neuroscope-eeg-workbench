@@ -59,7 +59,7 @@ from neuroscope_eeg.timing.neuracle_dcp import NDE0001Transport
 from neuroscope_eeg.timing.router import TriggerRouter
 
 
-MAX_VISIBLE_CHANNELS = 32
+MAX_VISIBLE_CHANNELS = 64
 WAVE_WINDOW_SEC = 4.0
 TD10_SOURCE_LABEL = "test-头带"
 SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo", TD10_SOURCE_LABEL)
@@ -417,7 +417,7 @@ class NeuroScopeWindow(QMainWindow):
             curve.setClipToView(True)
             self.wave_curves.append(curve)
         self.live_hint = QLabel(
-            "启动后显示波形。强脑采用逐通道独立缩放；博睿康固定测试范式只展示 Fp1/Fpz/Fp2/T7/T8。"
+            "启动后按采集设置显示波形。强脑采用逐通道独立缩放；固定测试范式仅在内部分析时选取推荐通道。"
         )
         self.live_hint.setObjectName("muted")
         layout.addWidget(self.wave_plot, 1)
@@ -519,7 +519,7 @@ class NeuroScopeWindow(QMainWindow):
             )
         else:
             self.live_hint.setText(
-                "启动后显示波形。强脑采用逐通道独立缩放；博睿康固定测试范式只展示 Fp1/Fpz/Fp2/T7/T8。"
+                "启动后按采集设置显示波形。强脑采用逐通道独立缩放；固定测试范式仅在内部分析时选取推荐通道。"
             )
         self._brainco_auto_changed()
 
@@ -1152,9 +1152,7 @@ class NeuroScopeWindow(QMainWindow):
             return
         data, names, sfreq = latest
         display = brainco_display_preprocess(data, sfreq) if self._is_brainco() else data
-        display, analysis_metadata = task_channel_view(
-            display, self.controller.source.metadata, self.paradigm_select.currentText()
-        )
+        analysis_metadata = self.controller.source.metadata
         names = analysis_metadata.channel_names
         self._analysis_data = display
         self._analysis_metadata = analysis_metadata
@@ -1271,6 +1269,9 @@ class NeuroScopeWindow(QMainWindow):
             return
         analysis_data = self._analysis_data
         analysis_metadata = self._analysis_metadata or self.controller.source.metadata
+        analysis_data, analysis_metadata = task_channel_view(
+            analysis_data, analysis_metadata, self.paradigm_select.currentText()
+        )
         if self.paradigm_select.currentText() == "听觉 ASSR":
             snapshot = self.controller.buffer.latest_available(10.0)
             if snapshot is not None:

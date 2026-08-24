@@ -15,11 +15,11 @@ from neuroscope_eeg.desktop.app import MAX_VISIBLE_CHANNELS, NeuroScopeWindow
 app = QApplication([])
 window = NeuroScopeWindow()
 curve_ids = [id(curve) for curve in window.wave_curves]
-names = tuple(f"C{i}" for i in range(32))
-window._apply_wave_data(np.ones((32, 100), dtype=np.float32), names, 250.0)
-window._apply_wave_data(np.zeros((32, 100), dtype=np.float32), names, 250.0)
+names = tuple(f"C{i}" for i in range(64))
+window._apply_wave_data(np.ones((64, 100), dtype=np.float32), names, 250.0)
+window._apply_wave_data(np.zeros((64, 100), dtype=np.float32), names, 250.0)
 assert window.target_fps.currentData() == 30
-assert len(window.wave_curves) == MAX_VISIBLE_CHANNELS == 32
+assert len(window.wave_curves) == MAX_VISIBLE_CHANNELS == 64
 assert [id(curve) for curve in window.wave_curves] == curve_ids
 screen = app.primaryScreen()
 window.stimulus_window.start_protocol("SSVEP", screen)

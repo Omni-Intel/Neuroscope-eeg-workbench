@@ -45,7 +45,14 @@ def test_recorder_creates_session_immediately_and_writes_readable_bdf(tmp_path: 
         )
     )
     recorder.record_event(
-        StimulusEvent(12.0, 34.0, "N-back 工作记忆", "nback_trial", "7", {"is_practice": False}),
+        StimulusEvent(
+            12.0,
+            34.0,
+            "N-back 工作记忆",
+            "start",
+            "N-back 工作记忆",
+            {"is_practice": False, "seed": 123456},
+        ),
         eeg_sample_index=15,
         eeg_session_sec=1.5,
     )
@@ -65,6 +72,7 @@ def test_recorder_creates_session_immediately_and_writes_readable_bdf(tmp_path: 
     assert session["valid_samples"] == 15
     assert session["padded_samples"] == 5
     assert session["events_written"] == 1
+    assert session["protocol_seed"] == 123456
     rows = recorder.events_path.read_text(encoding="utf-8-sig").splitlines()
     assert len(rows) == 2
     assert ",15," in rows[1]

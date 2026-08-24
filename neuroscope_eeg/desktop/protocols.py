@@ -49,7 +49,7 @@ PRESETS: dict[str, ProtocolPreset] = {
     "完整采集": ProtocolPreset("完整采集", 60, 2, 12, 4, 40, 13, 120, 300, 15),
 }
 
-PROTOCOL_VERSION = "2026.08.11"
+PROTOCOL_VERSION = "2026.08.23"
 TIMING_STATUS = "software_sync_uncalibrated"
 NBACK_STIMULUS_DURATION_SEC = 1.5
 NBACK_BLANK_DURATION_SEC = 0.5
@@ -109,11 +109,32 @@ class StroopTrial:
 STROOP_RESPONSE_KEYS = {"congruent": "J", "incongruent": "F"}
 
 
-def _nonadjacent_positions(total: int, count: int, rng: random.Random) -> set[int]:
-    if count < 0 or count * 2 > total + 1:
-        raise ValueError("count cannot be placed without adjacent positions")
-    compressed = sorted(rng.sample(range(total - count + 1), count))
-    return {position + offset for offset, position in enumerate(compressed)}
+def _longest_run(values: list[bool] | list[str], *, alternating: bool = False) -> int:
+    longest = current = 1
+    for left, right in zip(values, values[1:]):
+        continues = left != right if alternating else left == right
+        current = current + 1 if continues else 1
+        longest = max(longest, current)
+    return longest
+
+
+def _nback_target_positions(total: int, count: int, rng: random.Random) -> set[int]:
+    if count < 0 or count > total:
+        raise ValueError("targets must be between zero and trials")
+    for _ in range(10_000):
+        conditions = [True] * count + [False] * (total - count)
+        rng.shuffle(conditions)
+        target_run = non_target_run = 0
+        valid = True
+        for condition in conditions:
+            target_run = target_run + 1 if condition else 0
+            non_target_run = non_target_run + 1 if not condition else 0
+            if target_run > 2 or non_target_run > 4:
+                valid = False
+                break
+        if valid and _longest_run(conditions, alternating=True) <= 6:
+            return {index for index, condition in enumerate(conditions) if condition}
+    raise ValueError("trial counts cannot satisfy the N-back randomization constraints")
 
 
 def generate_nback_trials(
@@ -129,7 +150,7 @@ def generate_nback_trials(
     if nback_level not in NBACK_LEVELS:
         raise ValueError("nback_level must be 0, 1, or 2")
     rng = random.Random(seed)
-    target_positions = _nonadjacent_positions(trials, targets, rng)
+    target_positions = _nback_target_positions(trials, targets, rng)
     if nback_level == 0:
         comparison_target = target_symbol if target_symbol is not None else str(rng.randrange(10))
         if comparison_target not in tuple(str(value) for value in range(10)):
@@ -265,11 +286,13 @@ def _nback_sequence_items(
     return items
 
 
-def generate_nback_schedule(preset: ProtocolPreset) -> tuple[NBackScheduleItem, ...]:
+def generate_nback_schedule(
+    preset: ProtocolPreset, *, seed: int = 17
+) -> tuple[NBackScheduleItem, ...]:
     items: list[NBackScheduleItem] = []
     practice_targets = 3
     for nback_level in NBACK_LEVELS:
-        sequence_seed = 11 + nback_level
+        sequence_seed = seed + 1_000_003 + nback_level * 1009
         target_symbol = str(random.Random(sequence_seed).randrange(10)) if nback_level == 0 else None
         trials = generate_nback_trials(
             10,
@@ -309,6 +332,7 @@ def generate_nback_schedule(preset: ProtocolPreset) -> tuple[NBackScheduleItem, 
         preset.nback_blocks_per_level,
         preset.nback_trials_per_block,
         preset.nback_targets_per_block,
+        seed=seed,
     )
     formal_trial_start = 0
     for block in blocks:
@@ -358,25 +382,67 @@ def generate_nback_schedule(preset: ProtocolPreset) -> tuple[NBackScheduleItem, 
     return tuple(items)
 
 
+def _random_run_lengths(total: int, parts: int, rng: random.Random) -> list[int]:
+    lengths = [1] * parts
+    for _ in range(total - parts):
+        candidates = [index for index, length in enumerate(lengths) if length < 3]
+        lengths[rng.choice(candidates)] += 1
+    rng.shuffle(lengths)
+    return lengths
+
+
+def _balanced_stroop_conditions(trials: int, rng: random.Random) -> list[str]:
+    per_condition = trials // 2
+    run_count = (per_condition + 1) // 2
+    first_runs = _random_run_lengths(per_condition, run_count, rng)
+    second_runs = _random_run_lengths(per_condition, run_count, rng)
+    first = "congruent" if rng.random() < 0.5 else "incongruent"
+    second = "incongruent" if first == "congruent" else "congruent"
+    conditions: list[str] = []
+    for first_length, second_length in zip(first_runs, second_runs):
+        conditions.extend([first] * first_length)
+        conditions.extend([second] * second_length)
+    return conditions
+
+
 def generate_stroop_trials(trials: int, *, seed: int = 17) -> tuple[StroopTrial, ...]:
     if trials <= 0 or trials % 2:
         raise ValueError("trials must be a positive even number")
     rng = random.Random(seed)
     colors = ("红", "绿", "蓝", "黄")
     per_condition = trials // 2
-    congruent: list[tuple[str, str, str]] = []
-    incongruent: list[tuple[str, str, str]] = []
+    pools: dict[str, list[tuple[str, str, str]]] = {
+        "congruent": [],
+        "incongruent": [],
+    }
     for index in range(per_condition):
         ink = colors[index % len(colors)]
-        congruent.append((ink, ink, "congruent"))
+        pools["congruent"].append((ink, ink, "congruent"))
         word = colors[(index + 1 + index // len(colors)) % len(colors)]
         if word == ink:
             word = colors[(colors.index(ink) + 1) % len(colors)]
-        incongruent.append((word, ink, "incongruent"))
-    rng.shuffle(congruent)
-    rng.shuffle(incongruent)
-    conditions = (congruent, incongruent) if rng.random() < 0.5 else (incongruent, congruent)
-    candidates = [item for pair in zip(*conditions) for item in pair]
+        pools["incongruent"].append((word, ink, "incongruent"))
+    conditions = _balanced_stroop_conditions(trials, rng)
+    candidates: list[tuple[str, str, str]] | None = None
+    for _ in range(1_000):
+        remaining = {condition: list(items) for condition, items in pools.items()}
+        for items in remaining.values():
+            rng.shuffle(items)
+        arranged: list[tuple[str, str, str]] = []
+        for condition in conditions:
+            eligible = [
+                index
+                for index, item in enumerate(remaining[condition])
+                if not arranged or (item[0] != arranged[-1][0] and item[1] != arranged[-1][1])
+            ]
+            if not eligible:
+                break
+            arranged.append(remaining[condition].pop(rng.choice(eligible)))
+        if len(arranged) == trials:
+            candidates = arranged
+            break
+    if candidates is None:
+        raise ValueError("trials cannot satisfy the Stroop randomization constraints")
     return tuple(
         StroopTrial(index, word, ink, condition, STROOP_RESPONSE_KEYS[condition])
         for index, (word, ink, condition) in enumerate(candidates)

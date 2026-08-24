@@ -5,6 +5,7 @@ from dataclasses import replace
 from itertools import accumulate
 import math
 import random
+import secrets
 from statistics import median
 import time
 
@@ -63,6 +64,7 @@ class StimulusWindow(QOpenGLWidget):
         self._last_phase = ""
         self._trial_index = -1
         self._rng = random.Random(17)
+        self.protocol_seed = 17
         self.current_symbol = "+"
         self.current_target = False
         self._responded_to_item = False
@@ -125,7 +127,14 @@ class StimulusWindow(QOpenGLWidget):
         self.stop_reason = "completed"
         self._pending_frame_events: list[StimulusEvent] = []
 
-    def start_protocol(self, paradigm: str, screen, preset_label: str = "快速演示") -> None:
+    def start_protocol(
+        self,
+        paradigm: str,
+        screen,
+        preset_label: str = "快速演示",
+        *,
+        seed: int | None = None,
+    ) -> None:
         if paradigm in {"听觉 ASSR", "听觉 Oddball"} and self._audio_player is None:
             self._audio_player = AudioPlayer()
         self.paradigm = paradigm
@@ -138,7 +147,12 @@ class StimulusWindow(QOpenGLWidget):
         self._last_tick = self.started_at
         self._last_phase = ""
         self._trial_index = -1
-        self._rng = random.Random(17)
+        randomized_paradigm = paradigm in {"N-back 工作记忆", "Stroop 色词冲突"}
+        if seed is None:
+            self.protocol_seed = secrets.randbits(63) if randomized_paradigm else 17
+        else:
+            self.protocol_seed = int(seed)
+        self._rng = random.Random(self.protocol_seed)
         self._last_item_at = 0.0
         self._last_problem_at = 0.0
         self._ssvep_target_index = 0
@@ -172,7 +186,7 @@ class StimulusWindow(QOpenGLWidget):
                 "software_sync": True,
                 "protocol_version": PROTOCOL_VERSION,
                 "preset": self.preset_label,
-                "seed": 17,
+                "seed": self.protocol_seed,
                 "timing_status": TIMING_STATUS,
                 "display_refresh_hz": self.refresh_hz,
                 "ssvep_frequencies": self.ssvep_frequencies if paradigm == "SSVEP" else (),
@@ -212,7 +226,7 @@ class StimulusWindow(QOpenGLWidget):
 
     def _prepare_protocol(self) -> None:
         if self.paradigm == "N-back 工作记忆":
-            self._nback_items = generate_nback_schedule(self.preset)
+            self._nback_items = generate_nback_schedule(self.preset, seed=self.protocol_seed)
             self._nback_item_ends = tuple(accumulate(item.duration_sec for item in self._nback_items))
             self._nback_item_index = -1
             self._nback_condition_trials = {"target": 0, "non_target": 0}
@@ -227,8 +241,10 @@ class StimulusWindow(QOpenGLWidget):
             self._reset_nback_block_stats()
             self._nback_last_completed_block = -1
         elif self.paradigm == "Stroop 色词冲突":
-            self._stroop_practice = generate_stroop_trials(12, seed=11)
-            self._stroop_formal = generate_stroop_trials(self.preset.stroop_trials, seed=17)
+            self._stroop_practice = generate_stroop_trials(12, seed=self.protocol_seed + 1_000_003)
+            self._stroop_formal = generate_stroop_trials(
+                self.preset.stroop_trials, seed=self.protocol_seed
+            )
             self._stroop_item_index = -1
             self._stroop_condition_trials = {"congruent": 0, "incongruent": 0}
             self._stroop_condition_correct = {"congruent": 0, "incongruent": 0}
@@ -941,7 +957,7 @@ class StimulusWindow(QOpenGLWidget):
         event_payload = {
             "protocol_version": PROTOCOL_VERSION,
             "preset": self.preset_label,
-            "seed": 17,
+            "seed": self.protocol_seed,
             "timing_status": TIMING_STATUS,
             "is_practice": False,
             **self.summary(),

@@ -15,6 +15,15 @@ from neuroscope_eeg.desktop.protocols import (
 )
 
 
+def _longest_run(values: list[bool] | list[str], *, alternating: bool = False) -> int:
+    longest = current = 1
+    for left, right in zip(values, values[1:]):
+        continues = left != right if alternating else left == right
+        current = current + 1 if continues else 1
+        longest = max(longest, current)
+    return longest
+
+
 def test_160_hz_screen_uses_exact_frame_locked_frequencies() -> None:
     assert frame_locked_frequencies(160.0) == (8.0, 10.0, 16.0, 20.0)
 
@@ -59,16 +68,25 @@ def test_assr_sequence_is_balanced_repeatable_and_interleaved_by_block() -> None
     assert all(sequence.count(condition) == 12 for condition in ("binaural", "right", "left"))
 
 
-def test_nback_sequences_have_exact_planned_targets_without_accidental_matches() -> None:
+def test_nback_sequences_are_constrained_random_without_accidental_matches() -> None:
     for level in (0, 1, 2):
         sequence = generate_nback_trials(40, 13, nback_level=level, target_symbol="7", seed=17)
+        conditions = [trial.is_target for trial in sequence]
         assert len(sequence) == 40
         assert sum(trial.is_target for trial in sequence) == 13
         assert all(trial.nback_level == level for trial in sequence)
         assert all(trial.is_target == (trial.symbol == trial.comparison_symbol) for trial in sequence)
-        assert all(not (left.is_target and right.is_target) for left, right in zip(sequence, sequence[1:]))
+        assert _longest_run(conditions) <= 4
+        assert _longest_run(conditions, alternating=True) <= 6
+        assert not any(
+            all(conditions[index + offset] for offset in range(3))
+            for index in range(len(conditions) - 2)
+        )
         assert sequence == generate_nback_trials(
             40, 13, nback_level=level, target_symbol="7", seed=17
+        )
+        assert sequence != generate_nback_trials(
+            40, 13, nback_level=level, target_symbol="7", seed=18
         )
 
 
@@ -82,11 +100,16 @@ def test_nback_blocks_repeat_zero_one_two_four_times() -> None:
     assert all(len(block.trials) == 40 for block in blocks)
     assert all(sum(trial.is_target for trial in block.trials) == 13 for block in blocks)
     assert all(block.target_symbol is not None for block in blocks if block.nback_level == 0)
+    condition_sequences = {
+        tuple(trial.is_target for trial in block.trials)
+        for block in blocks
+    }
+    assert len(condition_sequences) == len(blocks)
     assert blocks == generate_nback_blocks(4, 40, 13, seed=17)
 
 
 def test_nback_schedule_has_480_trials_and_planned_timing() -> None:
-    schedule = generate_nback_schedule(PRESETS["完整采集"])
+    schedule = generate_nback_schedule(PRESETS["完整采集"], seed=17)
     formal_trials = [item for item in schedule if item.kind == "trial" and not item.is_practice]
     formal_rules = [item for item in schedule if item.kind == "rule" and not item.is_practice]
     rests = [item for item in schedule if item.kind == "rest"]
@@ -109,7 +132,7 @@ def test_nback_schedule_has_480_trials_and_planned_timing() -> None:
 
 
 def test_stroop_sequence_is_balanced_and_uses_binary_congruency_keys() -> None:
-    for total in (30, 120):
+    for total in (12, 30, 120):
         trials = generate_stroop_trials(total, seed=17)
         congruent = [trial for trial in trials if trial.congruency == "congruent"]
         incongruent = [trial for trial in trials if trial.congruency == "incongruent"]
@@ -121,7 +144,22 @@ def test_stroop_sequence_is_balanced_and_uses_binary_congruency_keys() -> None:
             assert max(counts) - min(counts) <= 1
         assert {trial.correct_key for trial in congruent} == {"J"}
         assert {trial.correct_key for trial in incongruent} == {"F"}
+        conditions = [trial.congruency for trial in trials]
+        assert _longest_run(conditions) <= 3
+        transitions = {
+            pair: sum((left.congruency, right.congruency) == pair for left, right in zip(trials, trials[1:]))
+            for pair in (
+                ("congruent", "congruent"),
+                ("congruent", "incongruent"),
+                ("incongruent", "congruent"),
+                ("incongruent", "incongruent"),
+            )
+        }
+        assert max(transitions.values()) - min(transitions.values()) <= 1
+        assert all(left.word != right.word for left, right in zip(trials, trials[1:]))
+        assert all(left.ink_color != right.ink_color for left, right in zip(trials, trials[1:]))
         assert trials == generate_stroop_trials(total, seed=17)
+        assert trials != generate_stroop_trials(total, seed=18)
 
 
 def test_oddball_presets_keep_eighty_twenty_ratio_without_adjacent_deviants() -> None:
