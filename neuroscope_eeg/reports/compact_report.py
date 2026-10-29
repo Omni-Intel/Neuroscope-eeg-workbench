@@ -157,6 +157,8 @@ def write_compact(report, destination, figures, title, device_label, shown):
         doc.add_heading('频率响应与谐波', 2)
         lo,hi=report['configuration']['ssvep_window_relative_flicker_sec']
         p(f'取闪烁后 {lo:g}–{hi:g} 秒；SNR 为目标频带与邻近背景功率比的 10log10，排除其他目标、谐波及已知工频邻域。')
+        if len(run.get('protocol_start_payload', {}).get('ssvep_frequencies', [])) == 8:
+            p('八频率间隔 1 Hz：背景取中心 ±2 Hz 内、距中心至少 0.5 Hz 的频点；排除各目标及谐波 ±max(0.25 Hz, 频谱分辨率)。至少保留 3 个背景频点，否则不计算 SNR。此口径与旧四分类不同，不能直接比较 SNR 数值。')
         table(['Hz／范围', '基频 n', '基频 SNR [95%区间]', '二次 SNR', '三次 SNR'], [
             (f'{c}／{label}',metric(c,'ROI','snr_db',subset,1).get('n',0),estimate(metric(c,'ROI','snr_db',subset,1)),
              shown(metric(c,'ROI','snr_db',subset,2).get('mean')),shown(metric(c,'ROI','snr_db',subset,3).get('mean')))
@@ -244,7 +246,7 @@ def write_compact(report, destination, figures, title, device_label, shown):
     start = group_start()
     doc.add_heading('固定算法与综合结论', 1)
     if task['status']=='available':
-        p('固定 FBCCA，三个子带与三次谐波，不训练个人模板；四目标名义随机水平 25%。' if ssvep else
+        p(f"固定 FBCCA，三个子带与三次谐波，不训练个人模板；{len(run.get('protocol_start_payload', {}).get('ssvep_frequencies', [])) or 4} 目标，名义随机水平 {100/(len(run.get('protocol_start_payload', {}).get('ssvep_frequencies', [])) or 4):g}%。" if ssvep else
           '固定 μ 频带 C3−C4 功率变化 dB 差 >0.6 判左手、<−0.6 判右手，其余未判定；静息不计入二分类，名义随机水平 50%。')
         table(['范围','n','准确率 [95%区间]','平衡准确率','判定覆盖率'], [
             (label,task[key]['n'],shown(task[key]['accuracy'],True)+' ['+('～'.join(shown(v,True) for v in task[key]['ci95_wilson']) if task[key]['ci95_wilson'] else '不可用')+']',

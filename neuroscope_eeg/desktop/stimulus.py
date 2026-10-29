@@ -177,8 +177,13 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         self._active_scheduled_trial = None
         self.refresh_hz = max(30.0, float(screen.refreshRate()))
         self.ssvep_frequencies = frame_locked_frequencies(self.refresh_hz)
-        if assessment_protocol and assessment_protocol.single_target:
+        if assessment_protocol and (assessment_protocol.single_target or assessment_protocol.eight_target):
             self.ssvep_frequencies = tuple(sorted(self.ssvep_frequencies))
+        if assessment_protocol and assessment_protocol.eight_target:
+            from neuroscope_eeg.desktop.ssvep_presentation import FREQUENCIES
+            if self.refresh_hz < 50:
+                raise ValueError('八目标刺激要求显示刷新率至少 50 Hz')
+            self.ssvep_frequencies = FREQUENCIES
         self.started_at = self._presentation_time()
         self.frame_index = 0
         self._last_tick = self.started_at
@@ -220,7 +225,7 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         self.timer.start(interval)
         QTimer.singleShot(80, lambda: self._place_on_screen(screen) if self.timer.isActive() else None)
         ssvep_display = (display_metadata(self, assessment_protocol, screen)
-                         if assessment_protocol and assessment_protocol.single_target else None)
+                         if assessment_protocol and (assessment_protocol.single_target or assessment_protocol.eight_target) else None)
         self._emit(
             "start",
             paradigm,
@@ -237,7 +242,7 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
                 "ssvep_display": ssvep_display,
                 "ssvep_condition_sequence": ([s.payload['condition_index'] for s in self._guided.steps
                                                if s.phase == 'flicker' and not s.payload['is_practice']]
-                                              if assessment_protocol and assessment_protocol.single_target else None),
+                                              if assessment_protocol and (assessment_protocol.single_target or assessment_protocol.eight_target) else None),
                 "planned_formal_trials": assessment_protocol.total_trials if assessment_protocol else (self._schedule.total if self._schedule else None),
                 "trials_per_condition": assessment_protocol.total_trials // assessment_protocol.conditions if assessment_protocol else (self._schedule.per_condition if self._schedule else None),
                 "practice_enabled": bool(assessment_protocol.practice_per_condition) if assessment_protocol else practice,
@@ -1240,7 +1245,7 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         painter.end()
 
     def _paint_ssvep(self, painter: QPainter) -> None:
-        if self._guided and self._guided.plan.single_target:
+        if self._guided and (self._guided.plan.single_target or self._guided.plan.eight_target):
             paint_single_target(self, painter)
             return
         width, height = self.width(), self.height()

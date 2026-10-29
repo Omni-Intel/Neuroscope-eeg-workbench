@@ -4,12 +4,13 @@ import pytest
 
 from neuroscope_eeg.protocol_config import AssessmentProtocol
 from neuroscope_eeg.desktop.protocols import frame_locked_frequencies
-from neuroscope_eeg.desktop.ssvep_presentation import target_layout, target_levels, target_polygons, BORDER_COLORS
+from neuroscope_eeg.desktop.ssvep_legacy import target_layout, target_levels, target_polygons, BORDER_COLORS
 
 
 def test_new_and_legacy_protocols_remain_distinct():
     new = AssessmentProtocol.defaults('SSVEP')
-    assert new.minimum_duration_sec == 1250
+    assert new.minimum_duration_sec == 1300
+    assert new.conditions == 8
     assert new.phases == [('fixation',1.5),('cue',1),('prep',1),('flicker',5),('rest',4)]
     assert AssessmentProtocol.from_dict(new.to_dict()) == new
     old = replace(new, ssvep_mode='simultaneous_quadrants_v1', cue_sec=2, rest_sec=2, fixation_sec=2)
@@ -17,7 +18,8 @@ def test_new_and_legacy_protocols_remain_distinct():
     restored = AssessmentProtocol.from_dict(saved)
     assert restored.phases == [('cue',2),('flicker',5),('rest',2)]
     assert restored.to_dict() == saved
-    assert restored.for_new_run() == new
+    # v1 never stored physical size; retain its legacy fallback when migrating.
+    assert restored.for_new_run() == replace(new, target_size_cm=6)
     mi = AssessmentProtocol.defaults('运动想象')
     assert mi.minimum_duration_sec == 1124
     assert AssessmentProtocol.from_dict(mi.to_dict()).phases == mi.phases

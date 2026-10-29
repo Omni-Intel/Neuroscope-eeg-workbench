@@ -218,8 +218,8 @@ def evaluate_task(root, run, device, profile, data, valid, indices, timestamps, 
             group = groups.setdefault(payload["trial"], {})
             group[event["phase"]] = {**event, "onset": float(timing["onset"])}
     frequencies = run.get("protocol_start_payload", {}).get("ssvep_frequencies", [])
-    if paradigm == "SSVEP" and (len(frequencies) != 4 or len(set(frequencies)) != 4 or any(f <= 0 or f*3 >= fs/2 for f in frequencies)):
-        result["reason"] = "缺少本次屏幕对应的四个实际刺激频率"
+    if paradigm == "SSVEP" and (len(frequencies) != (plan.conditions if plan else 4) or len(set(frequencies)) != len(frequencies) or any(f <= 0 or f*3 >= fs/2 for f in frequencies)):
+        result["reason"] = "本次刺激频率数量与协议不符，或频率不满足采样率要求"
         return result
     evidence = ResponseEvidence(paradigm, fs, [device["channel_names"][i] for i in chosen],
                                 frequencies if paradigm == "SSVEP" else [], profile.get("power_line_frequency"))
@@ -343,7 +343,8 @@ def assess(root, progress=lambda _: None):
     progress("校验输入文件与分析配置")
     fingerprints = {str(p.relative_to(root)): sha256(p) for p in source_files(root)}
     events = read_jsonl(root / "events.jsonl")
-    report = {"analysis_version": VERSION, "configuration": deepcopy(CONFIG), "source_session_id": run["session_id"], "run": run,
+    version = ('assessment-v1.4.0' if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v3' else VERSION)
+    report = {"analysis_version": version, "configuration": deepcopy(CONFIG), "source_session_id": run["session_id"], "run": run,
               "device": device, "profile": profile, "input_sha256": fingerprints,
               "runtime": {"python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__},
               "channels": [], "windows": [], "spectra": [], "task": {"status": "unavailable", "reason": "等待关联外部 EDF", "trials": [], "timecourses": []},

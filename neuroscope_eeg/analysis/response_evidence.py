@@ -4,14 +4,14 @@ from collections import Counter, defaultdict
 import numpy as np
 from scipy.signal import spectrogram, welch
 
-from neuroscope_eeg.analysis.task_assessment import band_power, local_snr, mean_ci
+from neuroscope_eeg.analysis.task_assessment import band_power, local_snr, mean_ci, spectral_guard
 
 METHODS = {
     "spectral": "Hann Welch, constant detrend, density uV^2/Hz; SSVEP full analysis window; MI 1 s segments, 50% overlap",
     "bandpower": "sum(PSD bins)*df; half-open bands; relative denominator [1,40) Hz",
     "bands_hz": {"delta": [1, 4], "theta": [4, 8], "alpha": [8, 13], "beta": [13, 30], "low_gamma": [30, 40]},
     "aggregation": "arithmetic mean of per-trial values; ROI PSD averages channels before trials; SNR dB averages per-trial dB",
-    "ssvep_noise": "median PSD within +/-2 Hz, excluding +/-0.5 Hz around bin and all targets/harmonics; known mains +/-1 Hz; >=3 bins",
+    "ssvep_noise": "median PSD within +/-2 Hz, excluding +/-0.5 Hz around center; targets/harmonics +/-0.5 Hz for 4 classes, +/-max(0.25 Hz,df) for 8 classes; known mains +/-1 Hz; >=3 bins",
     "baseline": "completed eyes-open interval, trim 0.5 s each end, nonoverlapping windows equal to SSVEP analysis window; matched channels and PSD; no gaze/luminance verification",
     "mi_baseline": "each trial fixation window from saved protocol, independent resting baseline does not replace it",
     "tfr": "Hann spectrogram, 1 s window, 0.25 s step, 4-40 Hz; per-trial 10log10(task PSD / fixation Welch PSD), then mean trials; centers only, no padding",
@@ -35,9 +35,10 @@ def harmonic_overlaps(frequencies):
 def snr_spectrum(f, p, targets, line):
     values = []
     excluded = np.zeros(len(f), dtype=bool)
+    guard = spectral_guard(targets, float(f[1]-f[0]))
     for target in targets:
         for harmonic in (1, 2, 3):
-            excluded |= abs(f-target*harmonic) <= .5
+            excluded |= abs(f-target*harmonic) <= guard
     if isinstance(line, (int, float)):
         for h in (1, 2):
             excluded |= abs(f-line*h) <= 1
@@ -163,7 +164,8 @@ class ResponseEvidence:
         for channel, x in [("ROI", task), *[(c, task[:, j:j+1]) for j, c in enumerate(self.channels)]]:
             snrs, powers = local_snr(x, self.fs, row["condition"], self.frequencies, self.line, details=True)
             for h, (snr, power) in enumerate(zip(snrs, powers), 1):
-                extra = {"harmonic": h, "frequency_hz": power["frequency_hz"], "noise_bins": power["noise_bins"]}
+                extra = {"harmonic": h, "frequency_hz": power["frequency_hz"], "noise_bins": power["noise_bins"],
+                         "target_exclusion_halfwidth_hz": power['target_exclusion_halfwidth_hz']}
                 self.metric(row, channel, "snr_db", snr, **extra)
                 self.metric(row, channel, "target_power_uv2", power["target_band_power_uv2"], **extra)
         # Independent rest comparison is calculated separately for both sample sets at finalization.

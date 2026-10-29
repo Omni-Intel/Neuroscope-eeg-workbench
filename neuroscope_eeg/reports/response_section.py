@@ -14,7 +14,7 @@ def response_figures(report, destination):
     destination = Path(destination)
     figures = []
     ssvep = report["run"]["paradigm"] == "SSVEP"
-    colors = ["#286a96", "#b45d24", "#4a8051", "#8a569c"]
+    colors = ["#286a96", "#b45d24", "#4a8051", "#8a569c", "#cf3f54", "#83751b", "#247f7b", "#6e6876"]
 
     def save(fig, name, title):
         path = destination / (name + ".png")
@@ -51,7 +51,7 @@ def response_figures(report, destination):
         matrix = np.array([[next((r["mean"] for r in values if r["condition"] == c and r["channel"] == ch), np.nan)
                             for ch in channels] for c in conditions], dtype=float)
         if matrix.size:
-            fig, ax = plt.subplots(figsize=(7, 2.7), layout="constrained")
+            fig, ax = plt.subplots(figsize=(7, 3.7 if len(conditions) > 4 else 2.7), layout="constrained")
             im = ax.imshow(matrix, aspect="auto", cmap="viridis")
             ax.set_xticks(range(len(channels)), channels)
             ax.set_yticks(range(len(conditions)), [c + " Hz" for c in conditions])
@@ -179,7 +179,7 @@ def write_response_section(layout, report, figures, shown):
         overlaps = evidence["harmonic_overlaps"]
         if overlaps:
             frequencies = sorted({r["frequency_hz"] for r in overlaps})
-            paragraph("本次存在共享频率：" + "、".join(f"{f:g} Hz" for f in frequencies) + "。四目标同时闪烁，共享频率的响应归属不唯一，不能作为各目标相互独立的谐波证据。", "谐波解释")
+            paragraph("本次存在共享频率：" + "、".join(f"{f:g} Hz" for f in frequencies) + "。共享频率的响应归属不唯一，不能作为各目标相互独立的谐波证据。", "谐波解释")
         baseline = [r for r in evidence["baseline_comparison"] if r["channel"] == "ROI" and r["subset"] == "analyzable"]
         if baseline:
             table(["目标 Hz", "任务功率", "睁眼功率", "变化 dB", "任务 n／基线窗 n"], [
@@ -229,6 +229,6 @@ def write_classification_details(layout, task, shown, paradigm):
         (label, shown(summary["precision_per_condition"][str(label)], True), shown(summary["per_condition"][str(label)], True),
          shown(summary["f1_per_condition"][str(label)])) for label in summary["labels"]], [1.6, 1.6, 1.6, 1.7])
     layout.paragraph("未判定在相应总体准确率和召回率中按未正确处理；已判定准确率只使用已给出类别的试次，必须与覆盖率一起看。没有预测为某类别时 Precision 不可用；真实类别缺失时不计算完整 macro F1 或平衡准确率。", "分类口径")
-    method = ("固定 FBCCA 使用三个滤波子带和三次谐波，不训练个人模板、不选择本次最优参数；四目标名义随机水平为 25%。不设置低分拒判阈值，模型不确定通常为零。" if paradigm == "SSVEP" else
+    method = ("固定 FBCCA 使用三个滤波子带和三次谐波，不训练个人模板、不选择本次最优参数；名义随机水平为 1/目标数。不设置低分拒判阈值，模型不确定通常为零。" if paradigm == "SSVEP" else
               "固定 μ 频带 C3−C4 功率变化 dB 差 >0.6 判左手、<−0.6 判右手，其余未判定。静息独立描述，不进入左右手二分类，名义随机水平为 50%。")
     layout.paragraph(method + "分类结果是任务信息可分性的辅助证据，不等于被试执行正确率或设备总体质量。")

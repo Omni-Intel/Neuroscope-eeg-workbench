@@ -15,7 +15,7 @@ def write_protocol_section(layout, report, shown):
         return
     doc, paragraph, table = layout.doc, layout.paragraph, layout.table
     doc.add_heading("本次实验流程与参数", 2)
-    conditions = 4 if settings["paradigm"] == "SSVEP" else 3
+    conditions = AssessmentProtocol.from_dict(settings).conditions
     block_note = (f"组间至少休息 {settings['block_rest_sec']:g} 秒，再按空格继续。"
                   if settings['total_trials'] > settings['block_trials'] else '本次仅一组，无组间休息。')
     table(["正式总试次", "每组最多", "计划组数", "练习总试次"], [[
@@ -36,21 +36,24 @@ def write_protocol_section(layout, report, shown):
     paragraph("实测范围来自事件对齐，包含显示调度误差，不等于已验证的物理刺激时长。等待时间另行记录；中止时未结束的阶段不列入范围。"
               "练习与静息不参与任务评分，独立静息用于信号质量观察。"
               + ("运动想象 ERD 仍使用各试次的提示前基线。" if settings['paradigm'] == '运动想象' else ""))
-    if plan.single_target:
+    if plan.single_target or plan.eight_target:
         display = report['run'].get('protocol_start_payload', {}).get('ssvep_display') or {}
-        paragraph('四个等大三角靶贴近屏幕上、右、下、左四边；仅提示目标闪烁，其余保持暗态。每组按频率从小到大循环。'
+        paragraph('八个等大方块位于九宫格外围，中央为提示区；八个目标同时闪烁，每组按 8–15 Hz 升序循环。固定 FBCCA 识别被提示注视的目标。' if plan.eight_target else '四个等大三角靶贴近屏幕上、右、下、左四边；仅提示目标闪烁，其余保持暗态。每组按频率从小到大循环。'
                   '固定算法结果描述不同单目标刺激频率的可辨识程度，不代表四靶同时闪烁的注视选择能力。')
         frequencies = display.get('frequencies_hz') or report['run'].get('protocol_start_payload', {}).get('ssvep_frequencies', [])
         rectangles = display.get('target_rects_logical_px', [])
         table(['显示条件', '本次记录'], [
-            ('上／右／下／左频率', ' / '.join(f'{v:g} Hz' for v in frequencies) or '未记录'),
+            ('位置顺序对应频率' if plan.eight_target else '上／右／下／左频率', ' / '.join(f'{v:g} Hz' for v in frequencies) or '未记录'),
             ('刷新率／屏幕', f"{shown(display.get('refresh_hz_reported'))} Hz / {display.get('screen_name') or '未记录'}"),
-            ('三角靶外框尺寸', (f"{rectangles[0][2]} 逻辑像素；" if rectangles else '') +
+            ('方块边长' if plan.eight_target else '三角靶外框尺寸', (f"{rectangles[0][2]} 逻辑像素；" if rectangles else '') +
              (f"估算 {display['target_size_cm_estimated']:.2f} cm" if display.get('target_size_cm_estimated') else '物理尺寸未确定')),
             ('屏幕对角线／观看距离', f"{shown(display.get('screen_diagonal_in_entered'))} 英寸 / {shown(display.get('viewing_distance_cm_entered'))} cm"),
         ], [2, 4.5])
-        paragraph('未填写屏幕尺寸时，外框取短边的 20%；否则由人工填写的对角线估算。实际顶点存入记录。'
+        paragraph('未填写屏幕尺寸时，外框取短边的 20%；否则由人工填写的对角线估算。实际外框存入记录。'
                   '固定顺序可能混入时间或疲劳影响，设备间比较需保持相同流程。')
+        if plan.eight_target:
+            paragraph('频率与逐帧黑白方波参考 Nakanishi 等（2014），doi:10.1371/journal.pone.0099235。'
+                      '本程序保留较长刺激、独立静息及升序条件安排，用于记录质量评估，非原论文的高速 BCI 实验复现。')
 
 
 def write_segment_quality_section(layout, report, shown):

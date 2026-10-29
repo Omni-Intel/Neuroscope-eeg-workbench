@@ -100,12 +100,14 @@ def guided_fixture(root, paradigm, **overrides):
 
     root = fixture_record(root, paradigm, repeats=1)
     base = AssessmentProtocol.defaults(paradigm)
+    if paradigm == 'SSVEP':
+        base = replace(base, ssvep_mode='single_target_v2')
     plan = replace(base, total_trials=base.conditions*2, block_trials=base.conditions,
                    task_sec=6, cue_sec=1.5, fixation_sec=2.5, rest_sec=1,
                    eyes_open_sec=5, eyes_closed_sec=5, close_prepare_sec=3, open_recovery_sec=3, block_rest_sec=5)
     plan = replace(plan, **overrides).validate()
     fs, elapsed, events, intervals = 250, 0., [], []
-    frequencies = [8., 10., 12., 15.]
+    frequencies = list(map(float, range(8,16))) if plan.eight_target else [8., 10., 12., 15.]
     def add(phase, payload, t):
         events.append({"phase": phase, "paradigm": paradigm, "label": "", "sample_cursor": round(t*fs),
                        "monotonic_time": t+100, "wall_time": t+1000, "payload": payload})

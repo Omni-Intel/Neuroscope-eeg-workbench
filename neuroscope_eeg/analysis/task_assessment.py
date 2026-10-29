@@ -49,18 +49,25 @@ def fbcca(data, fs, frequencies):
     return int(np.argmax(scores)), scores.tolist()
 
 
+def spectral_guard(frequencies, df):
+    # Eight 1-Hz-spaced targets require inter-target background bins. Preserve
+    # the four-class definition; never narrow below one actual spectral bin.
+    return max(.25, df) if len(frequencies) == 8 else .5
+
+
 def local_snr(data, fs, target, frequencies, line, *, details=False):
     freq, power = welch(data, fs=fs, axis=0, nperseg=len(data))
     power = power.mean(axis=1)
     result = []
     powers = []
+    guard = spectral_guard(frequencies, fs/len(data))
     for harmonic in (1, 2, 3):
         f = target * harmonic
         signal = np.abs(freq-f) <= max(.25, fs/len(data)/2)
         noise = (np.abs(freq-f) <= 2) & (np.abs(freq-f) >= .5)
         for other in frequencies:
             for h in (1, 2, 3):
-                noise &= np.abs(freq-other*h) > .5
+                noise &= np.abs(freq-other*h) > guard
         if isinstance(line, (float, int)):
             for h in (1, 2):
                 noise &= np.abs(freq-line*h) > 1
@@ -69,7 +76,8 @@ def local_snr(data, fs, target, frequencies, line, *, details=False):
         result.append(float(10*np.log10(numerator/denominator)) if denominator > 0 and numerator > 0 else None)
         powers.append({"harmonic": harmonic, "frequency_hz": f, "target_psd_uv2_per_hz": numerator,
                        "background_psd_uv2_per_hz": denominator if denominator > 0 else None,
-                       "target_band_power_uv2": float(power[signal].sum()*fs/len(data)), "noise_bins": int(noise.sum())})
+                       "target_band_power_uv2": float(power[signal].sum()*fs/len(data)), "noise_bins": int(noise.sum()),
+                       "target_exclusion_halfwidth_hz": guard})
     return (result, powers) if details else result
 
 

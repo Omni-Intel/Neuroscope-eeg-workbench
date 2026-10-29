@@ -24,7 +24,7 @@ class AssessmentProtocol:
     screen_diagonal_in: float = 0
     target_size_cm: float = 6
     viewing_distance_cm: float = 0
-    ssvep_mode: str = 'single_target_v2'
+    ssvep_mode: str = 'simultaneous_eight_v3'
 
     @classmethod
     def defaults(cls, paradigm):
@@ -33,19 +33,23 @@ class AssessmentProtocol:
                        practice_per_condition=2, cue_sec=1, task_sec=4)
         if paradigm != "SSVEP":
             raise ValueError("该范式不使用 SSVEP / 运动想象协议设置")
-        return cls(paradigm, fixation_sec=1.5, cue_sec=1, rest_sec=4)
+        return cls(paradigm, fixation_sec=1.5, cue_sec=1, rest_sec=4, target_size_cm=3)
 
     @property
     def single_target(self):
         return self.paradigm == 'SSVEP' and self.ssvep_mode == 'single_target_v2'
 
     @property
+    def eight_target(self):
+        return self.paradigm == 'SSVEP' and self.ssvep_mode == 'simultaneous_eight_v3'
+
+    @property
     def conditions(self):
-        return 4 if self.paradigm == "SSVEP" else 3
+        return (8 if self.eight_target else 4) if self.paradigm == "SSVEP" else 3
 
     @property
     def phases(self):
-        if self.single_target:
+        if self.single_target or self.eight_target:
             return [('fixation', self.fixation_sec), ('cue', self.cue_sec), ('prep', self.prep_sec),
                     ('flicker', self.task_sec), ('rest', self.rest_sec)]
         return (([("fixation", self.fixation_sec)] if self.paradigm == "运动想象" else [])
@@ -63,7 +67,7 @@ class AssessmentProtocol:
     def validate(self):
         if self.paradigm not in {"SSVEP", "运动想象"}:
             raise ValueError("未知的评估范式")
-        if self.ssvep_mode not in {'single_target_v2', 'simultaneous_quadrants_v1'}:
+        if self.ssvep_mode not in {'single_target_v2', 'simultaneous_quadrants_v1', 'simultaneous_eight_v3'}:
             raise ValueError('未知 SSVEP 刺激模式')
         for name in ("total_trials", "block_trials", "practice_per_condition"):
             value = getattr(self, name)
@@ -91,36 +95,38 @@ class AssessmentProtocol:
 
     def to_dict(self):
         data = asdict(self)
-        if not self.single_target:
+        if not (self.single_target or self.eight_target):
             data = {k:v for k,v in data.items() if k not in SSVEP_FIELDS}
-        return {"version": "guided-assessment-v2" if self.single_target else "guided-assessment-v1", **data,
-                "condition_order": "ascending_frequency_cyclic" if self.single_target else "cyclic_balanced", "minimum_duration_sec": self.minimum_duration_sec,
+        return {"version": "guided-assessment-v3" if self.eight_target else ("guided-assessment-v2" if self.single_target else "guided-assessment-v1"), **data,
+                "condition_order": "ascending_frequency_cyclic" if self.single_target or self.eight_target else "cyclic_balanced", "minimum_duration_sec": self.minimum_duration_sec,
                 "duration_excludes_space_waits": True}
 
     @classmethod
     def from_dict(cls, data):
-        if data.get("version") not in {"guided-assessment-v1", "guided-assessment-v2"}:
+        if data.get("version") not in {"guided-assessment-v1", "guided-assessment-v2", "guided-assessment-v3"}:
             raise ValueError("不支持的实验协议版本")
         names = {f.name for f in fields(cls)}
         unknown = set(data) - names - {"version", "condition_order", "minimum_duration_sec", "duration_excludes_space_waits"}
         if unknown:
             raise ValueError("未知实验协议字段：" + ", ".join(sorted(unknown)))
-        required = names if data['version'] == 'guided-assessment-v2' else names - SSVEP_FIELDS
+        required = names if data['version'] != 'guided-assessment-v1' else names - SSVEP_FIELDS
         if not required <= data.keys():
             raise ValueError("实验协议字段不完整")
         values = {k: data[k] for k in names if k in data}
         if data['version'] == 'guided-assessment-v1':
             values['ssvep_mode'] = 'simultaneous_quadrants_v1'
-        elif data.get('ssvep_mode') != 'single_target_v2' or data.get('paradigm') != 'SSVEP' or data.get('condition_order') != 'ascending_frequency_cyclic':
-            raise ValueError('SSVEP v2 须使用单靶闪烁和频率升序循环')
+        elif data.get('ssvep_mode') != {'guided-assessment-v2':'single_target_v2', 'guided-assessment-v3':'simultaneous_eight_v3'}[data['version']] or data.get('paradigm') != 'SSVEP' or data.get('condition_order') != 'ascending_frequency_cyclic':
+            raise ValueError('SSVEP 协议版本、刺激模式与频率升序循环须一致')
         return cls(**values).validate()
 
     def for_new_run(self):
         """Upgrade saved UI preferences only; never reinterpret an old recording."""
-        if self.paradigm == 'SSVEP' and not self.single_target:
-            return replace(self, ssvep_mode='single_target_v2', fixation_sec=1.5,
-                           cue_sec=1 if self.cue_sec == 2 else self.cue_sec,
-                           rest_sec=4 if self.rest_sec == 2 else self.rest_sec)
+        if self.paradigm == 'SSVEP' and not self.eight_target:
+            legacy_v1 = self.ssvep_mode == 'simultaneous_quadrants_v1'
+            return replace(self, ssvep_mode='simultaneous_eight_v3', fixation_sec=1.5 if legacy_v1 else self.fixation_sec,
+                           total_trials=math.ceil(self.total_trials/8)*8, block_trials=math.ceil(self.block_trials/8)*8,
+                           cue_sec=1 if legacy_v1 and self.cue_sec == 2 else self.cue_sec,
+                           rest_sec=4 if legacy_v1 and self.rest_sec == 2 else self.rest_sec)
         return self
 
     def analysis_windows(self):

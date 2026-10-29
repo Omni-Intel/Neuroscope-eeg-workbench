@@ -26,6 +26,8 @@ def protocol_steps(plan: AssessmentProtocol):
             "四个频率从小到大循环；休息时可眨眼，下一次重新看中央十字。\n"
             "无需按键判断；不适时可按 Esc 停止。"
             if plan.single_target else
+            "注视红框提示的方块；闪烁阶段八个方块同时闪烁，请始终注视该目标。\n八个频率从小到大循环；休息时可眨眼，无需按键判断。"
+            if plan.eight_target else
             "按目标提示注视相应频率区域；四个目标同时闪烁。无需按键判断。"
             if plan.paradigm == 'SSVEP' else
             "注视中央十字；左箭头表示左手，右箭头表示右手，圆点表示静息。\n"
