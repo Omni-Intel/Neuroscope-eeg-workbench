@@ -146,8 +146,18 @@ def event_code_for(
             return definition_by_symbol("RESPONSE_INCORRECT")
         return definition_by_symbol("RESPONSE")
 
+    if phase in {"baseline_eyes_open", "baseline_eyes_closed", "baseline_close_prepare", "baseline_open_recovery"}:
+        return definition_by_symbol({"baseline_eyes_open": "EYES_OPEN_ONSET",
+                                     "baseline_eyes_closed": "EYES_CLOSED_ONSET",
+                                     "baseline_close_prepare": "EYES_TRANSITION",
+                                     "baseline_open_recovery": "EYES_TRANSITION"}[phase])
+    if phase == "block_rest":
+        return definition_by_symbol("BLOCK_END")
+
     key = _paradigm_key(paradigm)
     if key == "ssvep":
+        if phase == "fixation":
+            return definition_by_symbol("FIXATION")
         if phase == "flicker":
             frequencies = tuple(payload.get("ssvep_frequencies", ()))
             target = payload.get("target_frequency")

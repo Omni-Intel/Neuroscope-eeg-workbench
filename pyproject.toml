@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuroscope-eeg-workbench"
-version = "0.3.6"
+version = "0.4.0"
 description = "NeuroScope multi-paradigm EEG visualization workbench for Neuracle and BrainCo"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -21,8 +21,11 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.6",
 ]
-brainco = ["bcigo-sdk==1.0.2"]
+omni = ["omnibci==0.2.0.dev0; sys_platform == 'win32'"]
+brainco = ["bcigo-sdk==2.1.2", "zeroconf>=0.131"]
 desktop = [
+  "python-docx>=1.1,<2",
+  "bids-validator-deno==3.0.2",
   "openpyxl>=3.1,<4",
   "pyserial>=3.5,<4",
   "PySide6-Essentials>=6.7,<6.11",
@@ -30,19 +33,22 @@ desktop = [
   "pylsl==1.18.2",
   "pyqtgraph>=0.13.7,<0.15",
   "sounddevice>=0.5,<0.6",
+  "antropy>=0.1.6,<0.2",
+  "mne-features>=0.3,<0.4",
 ]
 
 [project.scripts]
 neuroscope-doctor = "neuroscope_eeg.diagnostics.environment:main"
 neuroscope-bundle = "neuroscope_eeg.io.diagnostic_bundle:main"
 neuroscope-desktop = "neuroscope_eeg.desktop.app:main"
+neuroscope-data = "neuroscope_eeg.io.data_cli:main"
 neuroscope-trigger-bench = "neuroscope_eeg.timing.bench:main"
 
 [tool.setuptools.packages.find]
 include = ["neuroscope_eeg*"]
 
 [tool.setuptools.package-data]
-neuroscope_eeg = ["assets/emotion_arousal/*.md", "assets/emotion_arousal/*.json", "assets/emotion_arousal/images/*.jpg"]
+neuroscope_eeg = ["assets/emotion_arousal/*.md", "assets/emotion_arousal/*.json", "assets/emotion_arousal/images/*.jpg", "acquisition/vendor/PROVENANCE.json", "reports/templates/*.docx", "reports/templates/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -51,3 +57,14 @@ addopts = "-q"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+assets = ["dvc[s3]>=3.60,<4"]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[tool.uv.sources]
+omnibci = { path = "vendor_sdk/omnibci/omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl" }

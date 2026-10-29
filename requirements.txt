@@ -1,8 +1,2 @@
-numpy>=1.24
-scipy>=1.12
-matplotlib>=3.8
-mne>=1.6
-pyedflib>=0.1.40,<0.2
-streamlit>=1.30
-pytest>=8.0
-ruff>=0.6
+# Dependencies are defined in pyproject.toml and locked in uv.lock.
+# Run setup-workbench.ps1; do not maintain a separate pip environment.

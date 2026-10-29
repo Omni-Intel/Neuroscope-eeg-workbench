@@ -1,0 +1,14 @@
+{
+  "source": "acq-task-eeg-demo-main supplied local snapshot",
+  "original_sha256": {
+    "base.py": "b0eacbd3bc43197e36a1683fa0313b7e7a55cf27dc6bdfcbe868d661fded0caa",
+    "brainco_acquirer.py": "7873cce94cb123a5a978e2ebae7ae8598ff9511b0566d0ee45f325dbdefcdf3f",
+    "lsl_acquirer.py": "4994f2748eca78464b6e477cee8e81976778d1dda635e8b96294ab6faaed8d64",
+    "collect/neuracle_api.py": "9f83db318bfa5f243279cfd427156892a7ef95e66a86733252db54c0f4e3182c"
+  },
+  "changes": [
+    "package-relative imports; see Git diff for subsequent reliability changes",
+    "2026-10-28: BrainCo discovery sequence and SDK event-loop construction aligned with the verified THINGS-EEG2-Extended desktop snapshot; local implementation retains the demo acquisition backend"
+  ],
+  "copyright": "Original author and copyright notices preserved."
+}

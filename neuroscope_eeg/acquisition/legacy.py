@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.timing.models import HardwareTriggerSample
-from realtime_eeg_viewer import BrainCoSource as LegacyBrainCoSource
-from realtime_eeg_viewer import NeuracleSource as LegacyNeuracleSource
 
 
 class LegacyRealtimeSource:
@@ -52,48 +49,12 @@ class LegacyRealtimeSource:
         return tuple(drain())
 
 
-def build_neuracle_source(
-    oi_mi_path: str,
-    host: str,
-    port: int,
-    sfreq: float,
-    n_channels: int,
-    buffer_sec: float = 30.0,
-    ready_timeout_sec: float = 15.0,
-) -> LegacyRealtimeSource:
-    return LegacyRealtimeSource(
-        LegacyNeuracleSource(
-            oi_mi_path=Path(oi_mi_path).expanduser(),
-            host=host,
-            port=port,
-            sfreq=sfreq,
-            n_channels=n_channels,
-            buffer_sec=buffer_sec,
-            ready_timeout_sec=ready_timeout_sec,
-        )
-    )
+def build_neuracle_source(oi_mi_path, host, port, sfreq, n_channels, buffer_sec=30.0, ready_timeout_sec=15.0):
+    """Compatibility signature; oi_mi_path is ignored, protocol code is packaged."""
+    from neuroscope_eeg.acquisition.devices import NeuracleSource
+    return NeuracleSource(host, port, sfreq, n_channels)
 
 
-def build_brainco_source(
-    sfreq: float,
-    n_channels: int,
-    brainco_addr: str = "",
-    brainco_port: int = 0,
-    auto_discover: bool = True,
-) -> LegacyRealtimeSource:
-    return LegacyRealtimeSource(
-        LegacyBrainCoSource(
-            sfreq=sfreq,
-            n_channels=n_channels,
-            buffer_sec=30.0,
-            brainco_addr=brainco_addr,
-            brainco_port=brainco_port,
-            auto_discover=auto_discover,
-            scan_timeout_sec=6.0,
-            ready_timeout_sec=20.0,
-            start_retries=2,
-            eeg_gain=6,
-            signal_source="NORMAL",
-            device_id="bcigo",
-        )
-    )
+def build_brainco_source(sfreq, n_channels, brainco_addr="", brainco_port=0, auto_discover=True):
+    from neuroscope_eeg.acquisition.devices import brainco_source
+    return brainco_source(sfreq, n_channels, brainco_addr, brainco_port, auto_discover)

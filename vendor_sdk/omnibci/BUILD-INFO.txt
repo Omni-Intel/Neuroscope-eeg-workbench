@@ -1,0 +1,12 @@
+Package:        omnibci 0.2.0.dev0 (development preview, not a release)
+Built for:      Windows x86_64 (cp311-abi3)
+Python:         >= 3.11
+Build date:     2026-10-26
+Source repo:    https://github.com/Omni-Intel/omnibci-python
+Source branch:  master
+Source commit:  0b8c342 (Merge pull request #4 from Omni-Intel/dev/impedance-components)
+Preview commit: f9007fd (local version bump to 0.2.0.dev0)
+SDK submodule:  843013ba62f1f05098c8639a657585720ce66a72 (omnibci-sdk)
+Built with:     maturin 1.15.0, Rust 1.98.1, Python 3.13.13
+Tests:          172 passed, 1 skipped (offline pytest, installed wheel)
+Hardware:       not validated on real hardware for this build

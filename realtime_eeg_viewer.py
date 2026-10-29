@@ -248,8 +248,7 @@ class NeuracleSource:
         buffer_sec: float,
         ready_timeout_sec: float,
     ) -> None:
-        sys.path.insert(0, str(oi_mi_path.expanduser()))
-        from collect.neuracle_api import DataServerThread  # type: ignore
+        from neuroscope_eeg.acquisition.vendor.collect.neuracle_api import DataServerThread
 
         self._DataServerThread = DataServerThread
         self.host = host
@@ -273,7 +272,7 @@ class NeuracleSource:
         )
 
     def start(self) -> None:
-        self.server = self._DataServerThread(sample_rate=int(self.sfreq), t_buffer=self.buffer_sec)
+        self.server = self._DataServerThread(sample_rate=int(self.sfreq), t_buffer=self.buffer_sec, enable_save_buffer=False, record_timestamps=False)
         failed = self.server.connect(hostname=self.host, port=self.port)
         if failed:
             self.server = None
@@ -288,7 +287,7 @@ class NeuracleSource:
 
         channel_names = list(getattr(self.server, "channelNames", []))
         channel_types = [str(x).upper() for x in getattr(self.server, "channelTypes", [])]
-        trigger_types = {"TRIGGER", "STIM", "MARKER", "EVENT"}
+        trigger_types = {"TRG", "TRIGGER", "STIM", "MARKER", "EVENT"}
         self.trigger_indices = [
             index
             for index, name in enumerate(channel_names)
@@ -370,7 +369,7 @@ class BrainCoSource:
         signal_source: str,
         device_id: str,
     ) -> None:
-        from neuroscope_eeg.acquisition.brainco import BrainCoAcquirer
+        from neuroscope_eeg.acquisition.vendor.brainco_acquirer import BrainCoAcquirer
 
         self.n_channels = min(max(int(n_channels), 1), 32)
         self.acquirer = BrainCoAcquirer(
@@ -712,7 +711,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--oi-mi-path",
         type=Path,
-        default=Path("/Users/mac/Documents/GitHub/oi-mi"),
+        default=Path("."),
         help="Neuracle adapter path only; ignored by BrainCo BCIGo mode.",
     )
     parser.add_argument("--host", default="127.0.0.1")

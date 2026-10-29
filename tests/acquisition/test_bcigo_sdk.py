@@ -154,4 +154,5 @@ def test_workbench_brainco_source_has_no_oi_mi_path_dependency() -> None:
     source = build_brainco_source(250, 5, "10.0.0.7", 9000, False)
 
     assert source.metadata.source_type == "brainco"
-    assert source.metadata.channel_names == ("FP1", "FP2", "F3", "F4", "F7")
+    assert source.metadata.channel_names == ("CH1", "CH2", "CH3", "CH4", "CH5")
+    assert source.metadata.extra["profile_confirmed"] is False

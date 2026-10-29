@@ -1,0 +1,10 @@
+{
+  "source_id": "请替换为本次device.json的source_id",
+  "measured_at": "2026-10-28T08:00:00+08:00",
+  "stage": "pre",
+  "unit": "kOhm",
+  "method": "请填写厂商工具或手工记录来源",
+  "channels": [
+    {"channel": "请填写真实电极名称", "value": null, "status": "未提供"}
+  ]
+}

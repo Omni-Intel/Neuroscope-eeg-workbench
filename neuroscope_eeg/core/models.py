@@ -31,7 +31,7 @@ class SourceMetadata:
     def __post_init__(self) -> None:
         if self.sfreq <= 0:
             raise ValueError("sfreq must be positive")
-        if not self.channel_names:
+        if not self.channel_names and self.source_type != "emotiv_external":
             raise ValueError("at least one channel is required")
         if len({len(self.channel_names), len(self.channel_types), len(self.channel_units)}) != 1:
             raise ValueError("channel fields must have equal length")
@@ -69,6 +69,10 @@ class EEGChunk:
     data: np.ndarray
     timestamps: np.ndarray
     sequence: int
+    sample_indices: np.ndarray | None = None
+    valid: np.ndarray | None = None
+    auxiliaries: Mapping[str, Any] = field(default_factory=dict)
+    received_at: float | None = None
 
     def __post_init__(self) -> None:
         data = np.asarray(self.data, dtype=np.float32)
@@ -83,6 +87,14 @@ class EEGChunk:
             raise ValueError("sequence must be non-negative")
         object.__setattr__(self, "data", data)
         object.__setattr__(self, "timestamps", timestamps)
+        for name, dtype in (("sample_indices", np.int64), ("valid", bool)):
+            value = getattr(self, name)
+            if value is not None:
+                value = np.asarray(value, dtype=dtype)
+                if value.shape != (data.shape[1],):
+                    raise ValueError(f"{name} must match sample count")
+                object.__setattr__(self, name, value)
+        object.__setattr__(self, "auxiliaries", MappingProxyType(dict(self.auxiliaries)))
 
     @property
     def n_samples(self) -> int:

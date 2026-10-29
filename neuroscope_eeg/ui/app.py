@@ -79,6 +79,8 @@ def _build_source(
         return build_neuracle_source(oi_mi_path, host, port, sfreq, n_channels)
     if source_label == "强脑 BrainCo":
         return build_brainco_source(sfreq, min(n_channels, 32), brainco_addr, brainco_port, brainco_auto)
+    if source_label != "模拟":
+        raise ValueError(f"不支持的数据源：{source_label!r}")
     channels = (
         ("Fp1", "Fp2", "Fpz", "T3", "T4")
         if n_channels == 5
@@ -191,7 +193,7 @@ def main() -> None:
         brainco_port = 0
         brainco_auto = True
         if source_label == "博睿康 Neuracle":
-            oi_mi_path = st.text_input("oi-mi 路径", value="", help="填写采集电脑上的博睿康采集接口目录")
+            st.caption("Neuracle 协议已内置，无需外部采集代码目录")
             host = st.text_input("JellyFish host", value="127.0.0.1")
             port = int(st.number_input("JellyFish port", min_value=1, max_value=65535, value=8712, step=1))
         if source_label == "强脑 BrainCo":

@@ -6,7 +6,6 @@ import numpy as np
 
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 
-
 DEFAULT_CHANNELS_32 = (
     "Fp1",
     "Fp2",
@@ -55,14 +54,16 @@ class SimulatedSource:
     ) -> None:
         self.metadata = SourceMetadata.eeg("simulated", "simulated", sfreq, channel_names)
         self.stim_freqs = stim_freqs
-        self.packet_samples = max(1, int(round(sfreq * packet_sec)))
+        self.packet_samples = max(1, round(sfreq * packet_sec))
         self.paced = paced
         self._rng = np.random.default_rng(seed)
         self._sample = 0
         self._started = False
+        self._clock_origin = 0.0
 
     def start(self) -> None:
         self._sample = 0
+        self._clock_origin = time.monotonic()
         self._started = True
 
     def stop(self) -> None:
@@ -102,5 +103,9 @@ class SimulatedSource:
         sequence = self._sample
         self._sample += self.packet_samples
         if self.paced:
-            time.sleep(self.packet_samples / sfreq)
+            # Anchor every packet to the same clock. Computing, consuming and
+            # oversleeping a packet must not shift all subsequent deadlines.
+            remaining = self._clock_origin + self._sample / sfreq - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
         return EEGChunk(metadata=self.metadata, data=data, timestamps=timestamps, sequence=sequence)

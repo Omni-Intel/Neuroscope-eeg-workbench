@@ -48,7 +48,7 @@ def install_vendor_module(monkeypatch, chunks: list[np.ndarray]) -> None:
     api = ModuleType("collect.neuracle_api")
     api.DataServerThread = FakeDataServerThread  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "collect", package)
-    monkeypatch.setitem(sys.modules, "collect.neuracle_api", api)
+    monkeypatch.setitem(sys.modules, "neuroscope_eeg.acquisition.vendor.collect.neuracle_api", api)
 
 
 def test_neuracle_excludes_trigger_channel_and_detects_nonzero_edges(monkeypatch) -> None:

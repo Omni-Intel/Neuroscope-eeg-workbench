@@ -62,7 +62,7 @@ class SessionController:
                     tuple(drain_hardware_triggers()) if callable(drain_hardware_triggers) else ()
                 )
                 with self._recorder_lock:
-                    if chunk.n_samples > 0:
+                    if chunk.n_samples > 0 or chunk.auxiliaries:
                         if self._recorder is not None:
                             self._recorder.submit(chunk)
                     submit_sidecars = getattr(self._recorder, "submit_sidecars", None)
@@ -79,6 +79,9 @@ class SessionController:
                     self.samples_received += chunk.n_samples
                     self.last_data_at = time.monotonic()
                 else:
+                    timeout = getattr(self.source, "stale_timeout_sec", None)
+                    if timeout and time.monotonic() - (self.last_data_at or self.started_at) > timeout:
+                        raise RuntimeError("设备连续无数据，已停止本段记录；重新连接须创建新记录")
                     time.sleep(0.002)
         except Exception as exc:  # noqa: BLE001
             self.error = str(exc)
@@ -86,20 +89,32 @@ class SessionController:
         finally:
             try:
                 self.source.stop()
+            except Exception as exc:  # noqa: BLE001 - acquisition boundary
+                self.error = self.error or f"设备停止失败：{exc}"
+                self.state = ConnectionState.ERROR
             finally:
                 if self.state is not ConnectionState.ERROR:
                     self.state = ConnectionState.STOPPED
 
     def stop(self, timeout: float = 2.0) -> None:
-        self.state = ConnectionState.STOPPING
+        if self.state is not ConnectionState.ERROR:
+            self.state = ConnectionState.STOPPING
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                self.error = "采集线程尚未退出，请等待设备停止后再连接"
+                self.state = ConnectionState.ERROR
+                return
         if self.state is not ConnectionState.ERROR:
             self.state = ConnectionState.STOPPED
 
     def elapsed_sec(self) -> float:
         return 0.0 if self.started_at is None else time.monotonic() - self.started_at
+
+    @property
+    def worker_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def last_data_age_sec(self) -> float | None:
         return None if self.last_data_at is None else max(0.0, time.monotonic() - self.last_data_at)

@@ -1,0 +1,14 @@
+{
+  "confirmed": false,
+  "device_id": "replace-with-actual-device-id",
+  "manufacturer": "填写实际厂家",
+  "model": "填写实际型号",
+  "channel_names": ["C3", "C4"],
+  "channel_types": ["eeg", "eeg"],
+  "channel_units": ["uV", "uV"],
+  "eeg_reference": "填写实际参考电极及接法",
+  "software_filters": "n/a",
+  "power_line_frequency": 50,
+  "edf_timezone": "+08:00",
+  "range_evidence": "导出前按设备文档补充 physical_min 和 physical_max 列表，顺序和单位与通道一致；不得照抄示例量程"
+}

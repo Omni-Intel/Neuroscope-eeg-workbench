@@ -21,3 +21,17 @@ subject_data/
 *.npy
 *.mat
 *.csv
+!profiles/*.example.csv
+
+/data/
+/.test-tmp*/
+/*.log
+/.sdk-api.txt
+/vendor_sdk/**/*.whl
+/.qa/
+/dist/
+# Per-machine device connection preferences
+/settings/
+
+/Records/
+/Reports/

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,14 +25,21 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from neuroscope_eeg.acquisition.legacy import build_brainco_source, build_neuracle_source
+from neuroscope_eeg.acquisition.devices import (
+    ExternalEmotivSource,
+    NeuracleSource,
+    OmniBCISource,
+    brainco_source,
+    lsl_source,
+    read_profile,
+)
 from neuroscope_eeg.acquisition.replay import NPZReplaySource
 from neuroscope_eeg.acquisition.simulated import SimulatedSource
 from neuroscope_eeg.acquisition.td10_lsl import (
@@ -41,28 +48,35 @@ from neuroscope_eeg.acquisition.td10_lsl import (
     TD10LSLSource,
     discover_td10_devices,
 )
+from neuroscope_eeg.analysis.capabilities import analysis_block_reason
 from neuroscope_eeg.analysis.quality import QualityReport, signal_quality
 from neuroscope_eeg.analysis.spectrum import band_power, power_spectrum
 from neuroscope_eeg.core.models import ConnectionState, EEGEvent, SourceMetadata
 from neuroscope_eeg.core.session import SessionController
+from neuroscope_eeg.desktop.assessment_actions import AssessmentActions
+from neuroscope_eeg.desktop.audio import AudioUnavailableError
+from neuroscope_eeg.desktop.connection_settings import ConnectionSettings
+from neuroscope_eeg.desktop.device_discovery import DeviceDiscoveryActions
+from neuroscope_eeg.desktop.navigation import build_shell
 from neuroscope_eeg.desktop.performance import FpsTracker, fps_level, timer_interval_ms
 from neuroscope_eeg.desktop.protocols import PRESETS, StimulusEvent, frame_locked_frequencies
-from neuroscope_eeg.desktop.audio import AudioUnavailableError
 from neuroscope_eeg.desktop.stimulus import StimulusWindow
-from neuroscope_eeg.io.session_recorder import RecordingError, SessionRecorder
+from neuroscope_eeg.desktop.workbench_actions import WorkbenchActions
+from neuroscope_eeg.io.native_recording import NativeRecorder
+from neuroscope_eeg.io.session_recorder import RecordingError
 from neuroscope_eeg.paradigms.base import PARADIGMS, ParadigmResult
 from neuroscope_eeg.preprocessing.basic import brainco_display_preprocess, robust_channel_scale
 from neuroscope_eeg.timing.codebook import definition_by_symbol, event_code_for
+from neuroscope_eeg.timing.emotiv_serial import EmotivSerialTransport, OmniTriggerTransport
 from neuroscope_eeg.timing.lsl_markers import LSLMarkerTransport
 from neuroscope_eeg.timing.models import TriggerRequest
 from neuroscope_eeg.timing.neuracle_dcp import NDE0001Transport
 from neuroscope_eeg.timing.router import TriggerRouter
 
-
 MAX_VISIBLE_CHANNELS = 64
 WAVE_WINDOW_SEC = 4.0
 TD10_SOURCE_LABEL = "test-头带"
-SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo", TD10_SOURCE_LABEL)
+SOURCE_OPTIONS = ("模拟", "NPZ 回放", "博睿康 Neuracle", "强脑 BrainCo", "公司 OmniBCI", "通用 LSL", "EMOTIV 外部录制", TD10_SOURCE_LABEL)
 PLOT_COLORS = ("#38bdf8", "#f59e0b", "#34d399", "#fb7185", "#a78bfa", "#22d3ee")
 FIXED_PILOT_PARADIGMS = {
     "静息睁眼/闭眼",
@@ -78,7 +92,13 @@ TASK_CHANNEL_GROUPS = (("FP1",), ("FPZ",), ("FP2",), ("T7", "T3"), ("T8", "T4"))
 def task_channel_view(
     data: np.ndarray, metadata: SourceMetadata, paradigm: str
 ) -> tuple[np.ndarray, SourceMetadata]:
-    if metadata.source_type != "neuracle" or paradigm not in FIXED_PILOT_PARADIGMS:
+    eeg = [i for i, kind in enumerate(metadata.channel_types) if kind == "eeg"]
+    if eeg and len(eeg) != metadata.n_channels:
+        data = data[eeg]
+        metadata = SourceMetadata(metadata.source_id, metadata.source_type, metadata.sfreq,
+                                  tuple(metadata.channel_names[i] for i in eeg), tuple("eeg" for _ in eeg),
+                                  tuple(metadata.channel_units[i] for i in eeg), metadata.extra)
+    if paradigm not in FIXED_PILOT_PARADIGMS:
         return data, metadata
     lookup = {name.upper(): index for index, name in enumerate(metadata.channel_names)}
     indices = [next((lookup[name] for name in group if name in lookup), -1) for group in TASK_CHANNEL_GROUPS]
@@ -114,13 +134,15 @@ class TD10DiscoveryWorker(QThread):
         self.devices_found.emit(devices)
 
 
-class NeuroScopeWindow(QMainWindow):
-    def __init__(self) -> None:
+class NeuroScopeWindow(ConnectionSettings, DeviceDiscoveryActions, AssessmentActions, WorkbenchActions, QMainWindow):
+    def __init__(self, *, settings_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("NeuroScope｜多范式脑电可视化工作台")
-        self.resize(1500, 920)
+        # Qt uses logical pixels; leave room for window decorations and the taskbar.
+        available = self.screen().availableGeometry()
+        self.resize(min(1500, available.width() - 40), min(920, available.height() - 80))
         self.controller: SessionController | None = None
-        self._session_recorder: SessionRecorder | None = None
+        self._session_recorder: NativeRecorder | None = None
         self._trigger_router: TriggerRouter | None = None
         self._analysis_data: np.ndarray | None = None
         self._analysis_metadata: SourceMetadata | None = None
@@ -136,37 +158,43 @@ class NeuroScopeWindow(QMainWindow):
         self._protocol_reference_metrics: dict[str, float] = {}
         self._wave_layout_key: tuple[tuple[str, ...], float] | None = None
         self._td10_discovery_worker: TD10DiscoveryWorker | None = None
+        self._settings_path = settings_path or Path("settings/device-connections.json")
+        self._connection_profiles: dict[str, dict] = {}
+        self._selected_source = ""
 
         self._build_ui()
         self._build_timers()
         self._source_changed()
         self._paradigm_changed()
+        self._load_connection_settings()
         self._update_status()
 
     def _build_ui(self) -> None:
-        root = QWidget()
-        layout = QHBoxLayout(root)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-        layout.addWidget(self._build_controls(), 0)
-        layout.addWidget(self._build_workspace(), 1)
-        self.setCentralWidget(root)
+        build_shell(self)
 
-    def _build_controls(self) -> QWidget:
-        panel = QWidget()
-        panel.setFixedWidth(300)
-        layout = QVBoxLayout(panel)
-        title = QLabel("NeuroScope")
-        title.setObjectName("appTitle")
-        subtitle = QLabel("多范式脑电可视化工作台")
-        subtitle.setObjectName("muted")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-
-        general = QGroupBox("采集设置")
+    def _build_controls(self) -> None:
+        layout, device_layout = self.page_columns[0]
+        task_layout, protocol_layout = self.page_columns[1]
+        report_layout, delivery_layout = self.page_columns[3]
+        advanced_layout, _ = self.page_columns[4]
+        experiment = QGroupBox("实验信息")
+        experiment_form = QFormLayout(experiment)
+        layout.addWidget(experiment)
+        task = QGroupBox("任务与协议")
+        task_form = QFormLayout(task)
+        task_layout.addWidget(task)
+        delivery_info = QGroupBox("平台登记信息")
+        delivery_form = QFormLayout(delivery_info)
+        layout.addWidget(delivery_info)
+        profile = QGroupBox("设备配置文件")
+        profile_form = QFormLayout(profile)
+        general = QGroupBox("设备与采样")
         form = QFormLayout(general)
         self.source_select = QComboBox()
         self.source_select.addItems(SOURCE_OPTIONS)
+        for index, label in enumerate(SOURCE_OPTIONS):
+            if label in {"NPZ 回放", "通用 LSL", TD10_SOURCE_LABEL}:
+                self.source_select.setItemData(index, "其他设备 / 调试", Qt.ItemDataRole.ToolTipRole)
         self.source_select.currentTextChanged.connect(self._source_changed)
         self.paradigm_select = QComboBox()
         self.paradigm_select.addItems(PARADIGMS.keys())
@@ -186,8 +214,8 @@ class NeuroScopeWindow(QMainWindow):
         self.target_fps.setCurrentIndex(1)
         self.target_fps.currentIndexChanged.connect(self._refresh_rate_changed)
         self.participant_id = QLineEdit()
-        self.participant_id.setPlaceholderText("完整采集必填，例如 S01")
-        self.recording_root = QLineEdit(str(Path.cwd() / "recordings"))
+        self.participant_id.setPlaceholderText("人员平台 8 位编号，例如 00000001")
+        self.recording_root = QLineEdit(str(Path.cwd()))
         recording_root_row = QWidget()
         recording_root_layout = QHBoxLayout(recording_root_row)
         recording_root_layout.setContentsMargins(0, 0, 0, 0)
@@ -198,14 +226,17 @@ class NeuroScopeWindow(QMainWindow):
         recording_root_layout.addWidget(recording_root_browse)
         self.recording_root_browse = recording_root_browse
         form.addRow("数据源", self.source_select)
-        form.addRow("任务范式", self.paradigm_select)
-        form.addRow("协议预设", self.protocol_preset)
-        form.addRow("受试者编号", self.participant_id)
-        form.addRow("记录目录", recording_root_row)
+        task_form.addRow("任务范式", self.paradigm_select)
+        task_form.addRow("协议预设", self.protocol_preset)
+        experiment_form.addRow("受试者编号", self.participant_id)
+        experiment_form.addRow("保存根目录", recording_root_row)
+        self.recording_root.setToolTip("在此目录下分别创建 data（交付包）、Reports（Word）和 Records（原始记录及分析依据）")
         form.addRow("采样率 Hz", self.sfreq)
         form.addRow("通道数", self.channels)
-        form.addRow("画面刷新", self.target_fps)
-        layout.addWidget(general)
+        self._acquisition_form = form
+        device_layout.addWidget(general)
+        self._add_assessment_controls(task_layout, report_layout)
+        self._add_workbench_controls(device_layout, delivery_form, delivery_layout, profile_form)
 
         self.replay_group = QGroupBox("NPZ 回放")
         replay_layout = QHBoxLayout(self.replay_group)
@@ -214,14 +245,7 @@ class NeuroScopeWindow(QMainWindow):
         replay_browse.clicked.connect(self._browse_replay)
         replay_layout.addWidget(self.replay_path)
         replay_layout.addWidget(replay_browse)
-        layout.addWidget(self.replay_group)
-
-        self.device_group = QGroupBox("博睿康 Neuracle 设置")
-        device_form = QFormLayout(self.device_group)
-        self.oi_mi_path = QLineEdit()
-        self.oi_mi_path.setPlaceholderText("采集电脑上的 oi-mi 目录")
-        device_form.addRow("oi-mi 路径", self.oi_mi_path)
-        layout.addWidget(self.device_group)
+        device_layout.addWidget(self.replay_group)
 
         self.neuracle_group = QGroupBox("博睿康 Neuracle")
         neuracle_form = QFormLayout(self.neuracle_group)
@@ -231,10 +255,14 @@ class NeuroScopeWindow(QMainWindow):
         self.neuracle_port.setValue(8712)
         neuracle_form.addRow("JellyFish IP", self.neuracle_host)
         neuracle_form.addRow("端口", self.neuracle_port)
-        layout.addWidget(self.neuracle_group)
+        neuracle_note = QLabel("填写 JellyFish 所在电脑的 IP。上方 EEG 通道数不含 TRG；辅助通道会一起保存。")
+        neuracle_note.setWordWrap(True)
+        neuracle_form.addRow(neuracle_note)
+        device_layout.addWidget(self.neuracle_group)
 
         self.brainco_group = QGroupBox("强脑 BrainCo")
         brainco_form = QFormLayout(self.brainco_group)
+        self._brainco_form = brainco_form
         self.brainco_auto = QCheckBox("自动发现（推荐）")
         self.brainco_auto.setChecked(True)
         self.brainco_auto.toggled.connect(self._brainco_auto_changed)
@@ -245,7 +273,7 @@ class NeuroScopeWindow(QMainWindow):
         brainco_form.addRow(self.brainco_auto)
         brainco_form.addRow("设备 IP", self.brainco_ip)
         brainco_form.addRow("端口", self.brainco_port)
-        layout.addWidget(self.brainco_group)
+        device_layout.addWidget(self.brainco_group)
 
         self.td10_group = QGroupBox(TD10_SOURCE_LABEL)
         td10_form = QFormLayout(self.td10_group)
@@ -270,27 +298,33 @@ class NeuroScopeWindow(QMainWindow):
         td10_form.addRow("设备", td10_device_row)
         td10_form.addRow(self.td10_discovery_status)
         td10_form.addRow(td10_note)
-        layout.addWidget(self.td10_group)
+        device_layout.addWidget(self.td10_group)
+
+        device_layout.addWidget(profile)
 
         self.timing_group = QGroupBox("实验事件同步")
         timing_form = QFormLayout(self.timing_group)
+        self._timing_form = timing_form
         self.timing_mode = QComboBox()
         self.timing_mode.addItem("NDE0001 硬件 + LSL（推荐）", "hardware_lsl")
         self.timing_mode.addItem("仅 LSL", "lsl_only")
+        self.timing_mode.addItem("公司 TriggerController + LSL", "omni_hardware")
+        self.timing_mode.setCurrentIndex(1)
         self.timing_mode.currentIndexChanged.connect(self._timing_mode_changed)
         self.trigger_port = QLineEdit("COM5")
         self.trigger_port.setPlaceholderText("例如 COM5 或 /dev/cu.usbserial-xxxx")
         timing_note = QLabel(
-            "NDE0001 使用 DCP 01 E1 01 00 XX。现场无光电/音频回环，物理刺激起始未校准。"
+            "物理刺激起始需光电 / 音频回环校验。"
         )
+        timing_note.setToolTip("NDE0001 使用 DCP 01 E1 01 00 XX；发送成功不代表设备已接收。")
         timing_note.setWordWrap(True)
         timing_note.setObjectName("muted")
         timing_form.addRow("同步模式", self.timing_mode)
-        timing_form.addRow("NDE0001 串口", self.trigger_port)
+        timing_form.addRow("Marker 发送串口", self.trigger_port)
         timing_form.addRow(timing_note)
-        layout.addWidget(self.timing_group)
+        protocol_layout.addWidget(self.timing_group)
 
-        paradigm = QGroupBox("范式参数")
+        paradigm = QGroupBox("当前协议摘要（只读）")
         paradigm_form = QFormLayout(paradigm)
         self.paradigm_form = paradigm_form
         self.ssvep_targets = QLineEdit("随第二屏刷新率自动生成")
@@ -328,16 +362,16 @@ class NeuroScopeWindow(QMainWindow):
         paradigm_form.addRow("听觉 Oddball", self.oddball_protocol)
         self.paradigm_group = paradigm
         self._preset_changed()
-        layout.addWidget(paradigm)
+        protocol_layout.addWidget(paradigm)
 
         stimulus = QGroupBox("刺激呈现与事件打标")
         stimulus_layout = QVBoxLayout(stimulus)
         self.display_select = QComboBox()
         self._populate_displays()
         stimulus_buttons = QHBoxLayout()
-        self.stimulus_start_button = QPushButton("开始刺激")
+        self.stimulus_start_button = QPushButton("开始实验")
         self.stimulus_start_button.clicked.connect(self._start_stimulus)
-        self.stimulus_stop_button = QPushButton("停止刺激")
+        self.stimulus_stop_button = QPushButton("停止实验")
         self.stimulus_stop_button.clicked.connect(self._stop_stimulus)
         stimulus_buttons.addWidget(self.stimulus_start_button)
         stimulus_buttons.addWidget(self.stimulus_stop_button)
@@ -349,8 +383,13 @@ class NeuroScopeWindow(QMainWindow):
         stimulus_layout.addWidget(self.display_select)
         stimulus_layout.addLayout(stimulus_buttons)
         stimulus_layout.addWidget(self.stimulus_status)
-        stimulus_layout.addWidget(self.export_events_button)
-        layout.addWidget(stimulus)
+        advanced = QGroupBox("高级显示与导出")
+        advanced_form = QFormLayout(advanced)
+        advanced_form.addRow("波形刷新率", self.target_fps)
+        advanced_form.addRow(self.export_events_button)
+        self.target_fps.setToolTip("只影响实时波形刷新，不改变采样率或 SSVEP 刺激频率")
+        advanced_layout.addWidget(advanced)
+        task_layout.addWidget(stimulus)
 
         buttons = QHBoxLayout()
         self.start_button = QPushButton("启动")
@@ -360,22 +399,19 @@ class NeuroScopeWindow(QMainWindow):
         self.stop_button.clicked.connect(self._stop_session)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
-        layout.addLayout(buttons)
-        layout.addStretch(1)
-        return panel
+        # Buttons are placed in the persistent control dock by build_shell().
 
     def _build_workspace(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        status = QGridLayout()
+        status = self._global_status_layout
         self.state_value = self._status_card(status, 0, "状态", "idle")
         self.source_value = self._status_card(status, 1, "数据源", "模拟")
         self.rate_value = self._status_card(status, 2, "采样率", "250 Hz")
         self.fps_value = self._status_card(status, 3, "刷新率", "目标 30 / 实际 0 FPS")
         self.data_value = self._status_card(status, 4, "数据新鲜度", "尚未接收")
-        layout.addLayout(status)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_live_tab(), "实时监控")
@@ -391,6 +427,7 @@ class NeuroScopeWindow(QMainWindow):
         card_layout = QVBoxLayout(card)
         result = QLabel(value)
         result.setObjectName("statusValue")
+        result.setWordWrap(True)
         card_layout.addWidget(result)
         layout.addWidget(card, 0, column)
         return result
@@ -487,21 +524,62 @@ class NeuroScopeWindow(QMainWindow):
         self.decoder_timer.timeout.connect(self._refresh_decoder)
 
     def _timing_mode_changed(self) -> None:
-        hardware = self.timing_mode.currentData() == "hardware_lsl"
+        source = self.source_select.currentText()
+        if source == "EMOTIV 外部录制" and self.timing_mode.currentIndex() != 0:
+            self.timing_mode.setCurrentIndex(0)
+        elif source != "公司 OmniBCI" and self.timing_mode.currentData() == "omni_hardware":
+            self.timing_mode.setCurrentIndex(1)
+        hardware = self.timing_mode.currentData() in {"hardware_lsl", "omni_hardware"}
+        self._timing_form.setRowVisible(self.trigger_port, hardware)
         self.trigger_port.setEnabled(hardware and self._trigger_router is None)
 
     def _source_changed(self) -> None:
         source = self.source_select.currentText()
+        changed = source != self._selected_source
+        if changed:
+            self.discovery_status.setText("扫描仅发现候选；连接与录制状态需分别确认。")
+            self._remember_connection(self._selected_source)
+            self.profile_path.clear()
+            # A previous external recording confirmation does not confirm a new run.
+            self.emotiv_recording_confirmed.setChecked(False)
+            if self._selected_source == "EMOTIV 外部录制":
+                self.timing_mode.setCurrentIndex(1)
+            self._selected_source = source
+            self._clear_live_display()
+        self.timing_mode.setItemText(0, "EmotivPRO 配对串口 + LSL" if source == "EMOTIV 外部录制" else "NDE0001 独立 TriggerBox + LSL")
+        for index in range(self.timing_mode.count()):
+            allowed = (index == 0) if source == "EMOTIV 外部录制" else (index != 2 or source == "公司 OmniBCI")
+            self.timing_mode.model().item(index).setEnabled(allowed)
+            self.timing_mode.view().setRowHidden(index, not allowed)
+        self._timing_mode_changed()
+        self._delivery_form.setRowVisible(self.emotiv_edf_button, source == "EMOTIV 外部录制")
+        for widget in (self.sfreq, self.channels):
+            self._acquisition_form.setRowVisible(widget, source not in {"EMOTIV 外部录制", "NPZ 回放"})
         is_replay = source == "NPZ 回放"
         is_neuracle = source == "博睿康 Neuracle"
         is_brainco = source == "强脑 BrainCo"
         is_td10 = source == TD10_SOURCE_LABEL
         self.channels.setMaximum(4 if is_td10 else 32 if is_brainco else 64)
         self.replay_group.setVisible(is_replay)
-        self.device_group.setVisible(is_neuracle)
         self.neuracle_group.setVisible(is_neuracle)
         self.brainco_group.setVisible(is_brainco)
         self.td10_group.setVisible(is_td10)
+        self.extra_device_group.setVisible(source in {"公司 OmniBCI", "通用 LSL", "EMOTIV 外部录制"})
+        self.extra_device_group.setTitle(source)
+        for widget in (self.omni_endpoint, self.omni_type, self.impedance_button, self.omni_transport, self.omni_scan_button):
+            self._extra_device_form.setRowVisible(widget, source == "公司 OmniBCI")
+        self._extra_device_form.setRowVisible(self.lsl_source_id, source == "通用 LSL")
+        for widget in (self.emotiv_receive_port, self.emotiv_recording_confirmed, self.emotiv_scan_button):
+            self._extra_device_form.setRowVisible(widget, source == "EMOTIV 外部录制")
+        self._extra_device_form.setRowVisible(self.discovery_status, source in {"公司 OmniBCI", "EMOTIV 外部录制"})
+        self._acquisition_form.labelForField(self.channels).setText("EEG 通道数（不含 TRG）" if is_neuracle else "通道数")
+        self.start_button.setText("准备外部录制" if source == "EMOTIV 外部录制" else "连接并检查数据")
+        if source == "公司 OmniBCI":
+            self.sfreq.setValue(250)
+            self.channels.setValue(32 if self.omni_type.currentText() == "stm32" else 8)
+        if source == "EMOTIV 外部录制":
+            self.timing_mode.setCurrentIndex(0)
+            self.live_hint.setText("EMOTIV：EmotivPRO 外部录制；本程序仅呈现刺激与发送 Marker，结束后关联 EDF。")
         if is_neuracle:
             self.sfreq.setValue(1000)
             self.channels.setValue(64)
@@ -511,19 +589,25 @@ class NeuroScopeWindow(QMainWindow):
         elif is_td10:
             self.sfreq.setValue(250)
             self.channels.setValue(4)
-        self.sfreq.setEnabled(not is_td10)
-        self.channels.setEnabled(not is_td10)
+        fixed_metadata = is_td10 or source in {"公司 OmniBCI", "EMOTIV 外部录制", "NPZ 回放"}
+        self.sfreq.setEnabled(not fixed_metadata)
+        self.channels.setEnabled(not fixed_metadata)
         if is_td10:
             self.live_hint.setText(
                 "TD10 显示保留 LSL 原始 ADC counts 和时间戳；未确认硬件比例与电极位置前，不换算微伏或执行范式解码。"
             )
-        else:
+        elif source != "EMOTIV 外部录制":
             self.live_hint.setText(
                 "启动后按采集设置显示波形。强脑采用逐通道独立缩放；固定测试范式仅在内部分析时选取推荐通道。"
             )
+        if changed:
+            self._apply_connection(source)
         self._brainco_auto_changed()
+        self._update_status()
 
     def _paradigm_changed(self) -> None:
+        self._refresh_experiment_identity()
+        self._trial_paradigm_changed()
         if not hasattr(self, "paradigm_form"):
             return
         paradigm = self.paradigm_select.currentText()
@@ -592,8 +676,18 @@ class NeuroScopeWindow(QMainWindow):
 
     def _open_trigger_router(self, session_id: str) -> None:
         mode = str(self.timing_mode.currentData())
+        omni_trigger = mode == "omni_hardware"
+        if omni_trigger and self.source_select.currentText() != "公司 OmniBCI":
+            raise ValueError("公司 TriggerController 仅适用于公司 OmniBCI 设备")
+        if omni_trigger:
+            mode = "hardware_lsl"
+        external = self.source_select.currentText() == "EMOTIV 外部录制"
+        if external:
+            mode = "hardware_lsl"
         hardware = (
-            NDE0001Transport(self.trigger_port.text().strip())
+            (EmotivSerialTransport(self.trigger_port.text(), self.emotiv_receive_port.text()) if external
+             else OmniTriggerTransport(self.trigger_port.text().strip()) if omni_trigger
+             else NDE0001Transport(self.trigger_port.text().strip()))
             if mode == "hardware_lsl"
             else None
         )
@@ -614,7 +708,7 @@ class NeuroScopeWindow(QMainWindow):
             TriggerRequest(
                 paradigm="system",
                 phase="calibration",
-                label="NDE0001 Trigger 通道自检",
+                label="Marker 通道自检",
                 payload={"condition": "trigger_path_calibration"},
                 wall_time=time.time(),
                 intent_time=time.monotonic(),
@@ -630,9 +724,9 @@ class NeuroScopeWindow(QMainWindow):
         confirmed = QMessageBox.question(
             self,
             "确认 Trigger 通道",
-            "已发送校准码 120。请确认博睿康采集界面已收到 120，再继续实验。",
+            "已发送校准码 120。请在设备录制软件确认收到该码，再继续实验。串口写入成功不代表设备已接收。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.No,
         )
         if confirmed != QMessageBox.StandardButton.Yes:
             raise RuntimeError("实验员未确认博睿康收到校准码 120")
@@ -647,10 +741,21 @@ class NeuroScopeWindow(QMainWindow):
 
     def _start_stimulus(self) -> None:
         if self.controller is None or self.controller.state is not ConnectionState.RUNNING:
-            QMessageBox.information(self, "请先启动采集", "请先启动模拟源或真机采集，再开始第二屏刺激。")
+            QMessageBox.information(self, "请先连接", "请先在实验准备页连接并检查数据，再开始实验。")
             return
         if self.stimulus_window.timer.isActive():
             QMessageBox.information(self, "范式正在运行", "请先停止当前范式，再启动下一次记录。")
+            return
+        if self.controller.source.metadata.source_type != "emotiv_external" and self.controller.samples_received == 0:
+            QMessageBox.information(self, "等待脑电数据", "请等待第一批样本到达后开始实验。")
+            return
+        if self.controller.source.metadata.source_type != "emotiv_external":
+            age = self.controller.last_data_age_sec()
+            if age is None or age > 2:
+                QMessageBox.warning(self, "数据未更新", "请检查设备，收到新的脑电样本后再开始实验。")
+                return
+        if self.source_select.currentText() == "EMOTIV 外部录制" and not self.emotiv_recording_confirmed.isChecked():
+            QMessageBox.warning(self, "请确认外部录制", "请先在 EmotivPRO 开始录制并勾选确认。本程序无法验证外部录制状态。")
             return
         td10_source = self.controller.source if isinstance(self.controller.source, TD10LSLSource) else None
         if (
@@ -663,6 +768,11 @@ class NeuroScopeWindow(QMainWindow):
             QMessageBox.warning(self, "TD10 companion 未就绪", message)
             self.stimulus_status.setText(f"未启动｜{message}")
             return
+        try:
+            assessment_protocol = self._assessment_protocol()
+        except ValueError as exc:
+            QMessageBox.warning(self, "请检查实验参数", str(exc))
+            return
         self.stimulus_events.clear()
         self._protocol_reference_metrics.clear()
         self._ssvep_checked_trials.clear()
@@ -670,18 +780,27 @@ class NeuroScopeWindow(QMainWindow):
         screen = self._selected_screen()
         if self.protocol_preset.currentText() == "完整采集":
             try:
-                self._session_recorder = SessionRecorder.start(
+                experiment_metadata = self._experiment_for_recording()
+                self._session_recorder = NativeRecorder.start(
                     root_dir=self.recording_root.text().strip(),
                     participant_id=self.participant_id.text(),
                     paradigm=self.paradigm_select.currentText(),
                     preset=self.protocol_preset.currentText(),
                     metadata=self.controller.source.metadata,
                     source_sample_offset=self.controller.samples_received,
+                    paradigm_code=self.paradigm_code.text(),
+                    unique_name=self.unique_name.text(),
+                    config={"experiment_metadata": experiment_metadata, "display": self.display_select.currentText(), "profile": read_profile(self.profile_path.text()),
+                            "assessment_protocol": assessment_protocol.to_dict() if assessment_protocol else None,
+                            "delivery": {"allow_estimated_timing": self.export_estimated_timing.isChecked()},
+                            "emotiv_operator_confirmed": self.emotiv_recording_confirmed.isChecked(),
+                            "emotiv_receiving_port": self.emotiv_receive_port.text()},
                 )
                 self.controller.attach_recorder(self._session_recorder)
                 self.participant_id.setEnabled(False)
                 self.recording_root.setEnabled(False)
                 self.recording_root_browse.setEnabled(False)
+                self._lock_run_controls(True)
                 self.stimulus_status.setText(f"正在写入｜{self._session_recorder.session_dir}")
             except (OSError, ValueError, RuntimeError, RecordingError) as exc:
                 self._finish_session_recording(status="error", reason="initialization_failed")
@@ -689,7 +808,7 @@ class NeuroScopeWindow(QMainWindow):
                 self.stimulus_status.setText(f"未启动｜{exc}")
                 return
         session_id = (
-            self._session_recorder.session_dir.name
+            self._session_recorder.run["session_id"]
             if self._session_recorder is not None
             else f"preview-{time.time_ns()}"
         )
@@ -703,8 +822,12 @@ class NeuroScopeWindow(QMainWindow):
             return
         try:
             self.stimulus_window.start_protocol(
-                self.paradigm_select.currentText(), screen, self.protocol_preset.currentText()
+                self.paradigm_select.currentText(), screen, self.protocol_preset.currentText(),
+                assessment_protocol=assessment_protocol,
             )
+            self.trial_group.setEnabled(False)
+            self.paradigm_select.setEnabled(False)
+            self.protocol_preset.setEnabled(False)
         except (AudioUnavailableError, ValueError) as exc:
             self._close_trigger_router()
             self._finish_session_recording(status="error", reason="stimulus_start_failed")
@@ -725,6 +848,9 @@ class NeuroScopeWindow(QMainWindow):
         self.stimulus_window.stop_protocol("manual_stop")
 
     def _stimulus_stopped(self) -> None:
+        self.trial_group.setEnabled(True)
+        self.paradigm_select.setEnabled(True)
+        self.protocol_preset.setEnabled(True)
         reason = self.stimulus_window.stop_reason
         status = "completed" if reason == "completed" else "aborted"
         if (self.controller is not None and self.controller.error) or (
@@ -822,7 +948,7 @@ class NeuroScopeWindow(QMainWindow):
                 if event.phase != "stop" and self.stimulus_window.timer.isActive():
                     QTimer.singleShot(0, lambda: self.stimulus_window.stop_protocol("recording_error"))
                 return
-        if event.paradigm == "SSVEP" and event.phase == "rest":
+        if event.paradigm == "SSVEP" and event.phase == "rest" and not event.payload.get("is_practice"):
             trial = int(event.payload.get("trial", -1))
             target = event.payload.get("target_frequency")
             if trial >= 0 and trial not in self._ssvep_checked_trials and target is not None:
@@ -838,6 +964,8 @@ class NeuroScopeWindow(QMainWindow):
         )
 
     def _capture_protocol_reference(self, event: StimulusEvent) -> None:
+        if self.controller is None or analysis_block_reason(self.controller.source.metadata, event.paradigm):
+            return
         if self.controller is None:
             return
         duration: float | None = None
@@ -955,8 +1083,9 @@ class NeuroScopeWindow(QMainWindow):
 
     def _brainco_auto_changed(self) -> None:
         manual = not self.brainco_auto.isChecked()
-        self.brainco_ip.setEnabled(manual)
-        self.brainco_port.setEnabled(manual)
+        for widget in (self.brainco_ip, self.brainco_port):
+            self._brainco_form.setRowVisible(widget, manual)
+            widget.setEnabled(manual and self.controller is None)
 
     def _discover_td10_devices(self) -> None:
         if self._td10_discovery_worker is not None and self._td10_discovery_worker.isRunning():
@@ -1014,7 +1143,7 @@ class NeuroScopeWindow(QMainWindow):
     def _browse_recording_root(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
-            "选择脑电记录目录",
+            "选择数据保存目录",
             self.recording_root.text().strip() or str(Path.cwd()),
         )
         if path:
@@ -1028,10 +1157,14 @@ class NeuroScopeWindow(QMainWindow):
             self.controller.detach_recorder(recorder)
         try:
             recorder.stop(status=status, reason=reason)
+            self._enqueue_report(recorder.session_dir)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "脑电保存失败", str(exc))
         finally:
             self._session_recorder = None
+            self._last_recording_path = recorder.session_dir
+            self._lock_run_controls(False)
+            self.emotiv_recording_confirmed.setChecked(False)
             self.participant_id.setEnabled(True)
             self.recording_root.setEnabled(True)
             self.recording_root_browse.setEnabled(True)
@@ -1041,21 +1174,30 @@ class NeuroScopeWindow(QMainWindow):
         label = self.source_select.currentText()
         sfreq = float(self.sfreq.value())
         n_channels = int(self.channels.value())
+        profile = read_profile(self.profile_path.text())
+        if label == "公司 OmniBCI":
+            return OmniBCISource(self.omni_endpoint.text(), self.omni_type.currentText(), profile)
+        if label == "通用 LSL":
+            return lsl_source(sfreq, n_channels, self.lsl_source_id.text(), profile)
+        if label == "EMOTIV 外部录制":
+            source = ExternalEmotivSource()
+            source.metadata = SourceMetadata("emotiv", "emotiv_external", 1., (), (), (),
+                                            {**profile, "external_recording": True})
+            return source
         if label == "NPZ 回放":
             if not self.replay_path.text().strip():
                 raise ValueError("请先选择 NPZ 回放文件")
             return NPZReplaySource(Path(self.replay_path.text()).expanduser())
         if label == "博睿康 Neuracle":
-            return build_neuracle_source(
-                self.oi_mi_path.text(), self.neuracle_host.text(), self.neuracle_port.value(), sfreq, n_channels
-            )
+            return NeuracleSource(self.neuracle_host.text(), self.neuracle_port.value(), sfreq, n_channels, profile)
         if label == "强脑 BrainCo":
-            return build_brainco_source(
+            return brainco_source(
                 sfreq,
                 min(n_channels, 32),
                 self.brainco_ip.text(),
                 self.brainco_port.value(),
                 self.brainco_auto.isChecked(),
+                profile,
             )
         if label == TD10_SOURCE_LABEL:
             return TD10LSLSource(
@@ -1063,6 +1205,8 @@ class NeuroScopeWindow(QMainWindow):
                 resolve_timeout_sec=5.0,
                 fallback_sfreq=sfreq,
             )
+        if label != "模拟":
+            raise ValueError(f"不支持的数据源：{label!r}；请选择明确的设备或模拟数据源")
         names = (
             ("Fp1", "Fp2", "Fpz", "T3", "T4")
             if n_channels == 5
@@ -1071,7 +1215,17 @@ class NeuroScopeWindow(QMainWindow):
         return SimulatedSource(sfreq=sfreq, channel_names=names, packet_sec=0.02)
 
     def _start_session(self) -> None:
+        if self._scan_worker is not None:
+            QMessageBox.information(self, "正在扫描", "请等待扫描完成后再连接设备。")
+            return
+        if self._file_worker is not None and self._file_worker.isRunning():
+            QMessageBox.information(self, "正在处理", "请等待文件操作或阻抗测量完成后再连接设备。")
+            return
         self._stop_session()
+        if self.controller is not None and self.controller.worker_alive:
+            QMessageBox.warning(self, "设备尚未停止", "原采集线程仍在退出，不能同时重新连接；稍后点击停止再启动")
+            return
+        self._clear_live_display()
         try:
             self.controller = SessionController(self._build_source(), buffer_sec=180.0)
             self.controller.start()
@@ -1090,6 +1244,7 @@ class NeuroScopeWindow(QMainWindow):
         self.decoder_timer.start(500)
         self.start_button.setEnabled(False)
         self._set_controls_enabled(False)
+        self._update_status()
 
     def _stop_session(self) -> None:
         self._stop_stimulus()
@@ -1101,6 +1256,10 @@ class NeuroScopeWindow(QMainWindow):
         self.decoder_timer.stop()
         if self.controller is not None:
             self.controller.stop()
+            if self.controller.worker_alive:
+                self.status_timer.start(100)
+                self._update_status()
+                return
         self.controller = None
         self._analysis_data = None
         self._analysis_metadata = None
@@ -1108,13 +1267,44 @@ class NeuroScopeWindow(QMainWindow):
         self._set_controls_enabled(True)
         self._update_status()
 
+    def _clear_live_display(self) -> None:
+        """Never present a previous source's samples as the newly selected device."""
+        self._analysis_data = None
+        self._analysis_metadata = None
+        self._wave_layout_key = None
+        self._last_decoder_value = ""
+        self._protocol_reference_metrics.clear()
+        self._ssvep_checked_trials.clear()
+        self._ssvep_trial_hits = 0
+        for curve in self.wave_curves:
+            curve.clear()
+        self.wave_plot.getAxis("left").setTicks([])
+        self.spectrum_curve.clear()
+        self.quality_bars.setOpts(x=np.arange(MAX_VISIBLE_CHANNELS), height=np.zeros(MAX_VISIBLE_CHANNELS))
+        self.quality_summary.setText("等待当前数据源的数据")
+        self.decoder_name.setText("Decoder：等待数据")
+        self.decoder_result.setText("尚未解码")
+        self.decoder_detail.setText("等待当前数据源的数据")
+        self.decoder_metrics.setRowCount(0)
+        self.record_table.setRowCount(0)
+
     def _set_controls_enabled(self, enabled: bool) -> None:
+        enabled = enabled and self._scan_worker is None
         for widget in (
             self.source_select,
             self.sfreq,
             self.channels,
             self.replay_path,
-            self.oi_mi_path,
+            self.profile_path,
+            self.profile_browse,
+            self.omni_endpoint,
+            self.omni_type,
+            self.omni_transport,
+            self.omni_scan_button,
+            self.emotiv_scan_button,
+            self.impedance_button,
+            self.lsl_source_id,
+            self.emotiv_receive_port,
             self.neuracle_host,
             self.neuracle_port,
             self.brainco_auto,
@@ -1124,9 +1314,9 @@ class NeuroScopeWindow(QMainWindow):
             self.td10_discover_button,
         ):
             widget.setEnabled(enabled)
-        is_td10 = self.source_select.currentText() == TD10_SOURCE_LABEL
-        self.sfreq.setEnabled(enabled and not is_td10)
-        self.channels.setEnabled(enabled and not is_td10)
+        fixed_metadata = self.source_select.currentText() in {TD10_SOURCE_LABEL, "公司 OmniBCI", "EMOTIV 外部录制", "NPZ 回放"}
+        self.sfreq.setEnabled(enabled and not fixed_metadata)
+        self.channels.setEnabled(enabled and not fixed_metadata)
         if enabled:
             self._brainco_auto_changed()
 
@@ -1154,7 +1344,7 @@ class NeuroScopeWindow(QMainWindow):
         display = brainco_display_preprocess(data, sfreq) if self._is_brainco() else data
         analysis_metadata = self.controller.source.metadata
         names = analysis_metadata.channel_names
-        self._analysis_data = display
+        self._analysis_data = data
         self._analysis_metadata = analysis_metadata
         if self.tabs.currentIndex() == 0:
             self._apply_wave_data(display, names, sfreq, independent_scale=self._is_brainco())
@@ -1199,17 +1389,24 @@ class NeuroScopeWindow(QMainWindow):
         if active_tab not in (1, 2):
             return
         metadata = self._analysis_metadata or self.controller.source.metadata
+        eeg = [i for i, kind in enumerate(metadata.channel_types) if kind == "eeg"]
+        if not eeg:
+            return
+        analysis = self._analysis_data[eeg]
+        names = tuple(metadata.channel_names[i] for i in eeg)
         if active_tab == 1:
-            freqs, psd = power_spectrum(self._analysis_data, metadata.sfreq)
+            freqs, psd = power_spectrum(analysis, metadata.sfreq)
             spectrum_db = 10.0 * np.log10(np.mean(psd, axis=0) + 1e-12)
             self.spectrum_curve.setData(freqs, spectrum_db)
-        elif metadata.source_type == "td10_lsl":
-            centered = self._analysis_data - np.mean(self._analysis_data, axis=1, keepdims=True)
+        elif any(metadata.channel_units[i] not in {"uV", "µV", "μV"} for i in eeg):
+            centered = analysis - np.mean(analysis, axis=1, keepdims=True)
             rms_counts = np.sqrt(np.mean(centered**2, axis=1))
-            self._show_td10_quality(rms_counts, metadata.channel_names)
+            self._show_td10_quality(rms_counts, names)
+            self.quality_plot.setLabel("left", "RMS（设备原始单位）")
+            self.quality_summary.setText("单位未确认为微伏：仅显示原始幅度，不使用电压阈值判断质量")
         else:
-            quality = signal_quality(self._analysis_data, metadata.channel_names)
-            self._show_quality(quality, metadata.channel_names)
+            quality = signal_quality(analysis, names)
+            self._show_quality(quality, names)
 
     def _show_quality(self, quality: QualityReport, names: tuple[str, ...]) -> None:
         self.quality_plot.setLabel("left", "RMS", units="μV")
@@ -1218,7 +1415,7 @@ class NeuroScopeWindow(QMainWindow):
         self.quality_bars.setOpts(x=x, height=rms, width=0.7)
         self.quality_plot.getAxis("bottom").setTicks([[(float(i), names[i]) for i in range(len(rms))]])
         self.quality_summary.setText(
-            f"整体质量：{quality.overall}　平直 {len(quality.flat_channels)}　"
+            f"本地阈值提示（非 EEGQC 评分）：{quality.overall}　平直 {len(quality.flat_channels)}　"
             f"噪声 {len(quality.noisy_channels)}　疑似削顶 {len(quality.clipped_channels)}"
         )
 
@@ -1258,6 +1455,13 @@ class NeuroScopeWindow(QMainWindow):
         if self.controller is None or self._analysis_data is None:
             return
         if self.tabs.currentIndex() != 3 and not self.stimulus_window.timer.isActive():
+            return
+        reason = analysis_block_reason(self.controller.source.metadata, self.paradigm_select.currentText())
+        if reason:
+            self.decoder_name.setText("分析条件未满足")
+            self.decoder_result.setText("暂不解释范式效果")
+            self.decoder_detail.setText(reason)
+            self.decoder_metrics.setRowCount(0)
             return
         if self._is_td10():
             self.decoder_name.setText("Decoder：TD10 原始数据保护")
@@ -1346,19 +1550,19 @@ class NeuroScopeWindow(QMainWindow):
             ("数据源", self.controller.source.metadata.source_id),
             ("累计样本", str(self.controller.samples_received)),
             ("数据块", str(self.controller.chunks_received)),
-            ("同步方式", "软件时间戳（无硬件 Trigger）"),
+            ("同步方式", self.timing_mode.currentText() + "（接收与物理时序需核验）"),
             ("协议预设", str(event.payload.get("preset", "未设置"))),
             ("时序状态", str(event.payload.get("timing_status", "未设置"))),
             ("刺激阶段", str(event.payload.get("stimulus_phase", "连续观察"))),
             ("刺激标签", str(event.payload.get("stimulus_label", event.code))),
             ("图像类别", str(event.payload.get("image_category", "未设置"))),
             ("情绪细分类", str(event.payload.get("fine_category_zh", "未设置"))),
-            ("正式试次", str(event.payload.get("trials", 0))),
+            ("已完成正式试次", str(event.payload.get("completed_formal_trials", event.payload.get("trials", 0)))),
             ("行为正确/命中", str(event.payload.get("hits", 0))),
             ("行为误报", str(event.payload.get("false_alarms", 0))),
             ("目标实际出现", "是" if event.payload.get("target_present") else "否"),
             ("已记录刺激事件", str(len(self.stimulus_events))),
-            ("SSVEP 本会话试次匹配率", ssvep_rate),
+            ("SSVEP 在线匹配参考（非报告准确率）", ssvep_rate),
         )
         self.record_table.setRowCount(len(values))
         for row, (name, value) in enumerate(values):
@@ -1373,6 +1577,10 @@ class NeuroScopeWindow(QMainWindow):
             self.rate_value.setText(f"{self.sfreq.value()} Hz")
             self.fps_value.setText(f"目标 {target} / 实际 0 FPS")
             self.data_value.setText("尚未接收")
+            if self.source_select.currentText() == "EMOTIV 外部录制":
+                self.rate_value.setText("由 EDF 确认")
+                self.data_value.setText("本程序不接收实时 EEG")
+            self._refresh_connection_state()
             return
         metadata = self.controller.source.metadata
         self.state_value.setText(self.controller.state.value)
@@ -1394,6 +1602,10 @@ class NeuroScopeWindow(QMainWindow):
             )
             data_status += f"｜Quality {valid_text}｜{companions}"
         self.data_value.setText(data_status)
+        if metadata.source_type == "emotiv_external":
+            self.state_value.setText("外部录制待人工确认")
+            self.rate_value.setText("由 EDF 确认")
+            self.data_value.setText("本程序不接收 EMOTIV 实时 EEG")
         warmed_up = self._run_started_at is not None and time.monotonic() - self._run_started_at > 1.5
         level = fps_level(actual, target) if warmed_up else "good"
         colors = {"good": "#22c55e", "warning": "#f59e0b", "critical": "#ef4444"}
@@ -1405,9 +1617,25 @@ class NeuroScopeWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: self.stimulus_window.stop_protocol("recording_error"))
         elif self.controller.state is ConnectionState.RUNNING:
             self.state_value.setStyleSheet("color: #22c55e;")
+        self._refresh_connection_state()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._scan_worker is not None:
+            QMessageBox.information(self, "正在扫描", "请等待设备扫描完成后再关闭。")
+            event.ignore()
+            return
+        if self._report_process is not None or self._report_queue:
+            QMessageBox.information(self, "正在生成报告", "报告在后台处理，请完成后再关闭。采集和界面仍可使用。")
+            event.ignore()
+            return
+        if self._file_worker is not None and self._file_worker.isRunning():
+            QMessageBox.information(self, "正在保存", "请等待文件操作完成后再关闭")
+            event.ignore()
+            return
         self._stop_session()
+        if self._report_process is not None:
+            event.ignore()
+            return
         if self._td10_discovery_worker is not None and self._td10_discovery_worker.isRunning():
             self._td10_discovery_worker.wait(2500)
         event.accept()
@@ -1423,28 +1651,49 @@ def _application_font(app: QApplication) -> QFont:
     return font
 
 
+def _application_stylesheet() -> str:
+    return """
+        QWidget { background: #0b1220; color: #e2e8f0; }
+        QGroupBox { border: 1px solid #334155; border-radius: 7px; margin-top: 9px; padding-top: 8px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #94a3b8; }
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTableWidget { background: #111c2f; border: 1px solid #334155; border-radius: 4px; padding: 5px; }
+        QPushButton { background: #1e293b; border: 1px solid #475569; border-radius: 5px; padding: 7px 12px; }
+        QPushButton:hover { background: #334155; }
+        QPushButton#primaryButton { background: #2563eb; border-color: #3b82f6; }
+        QLabel#appTitle { font-size: 24px; font-weight: 700; color: #f8fafc; }
+        QLabel#statusValue { font-size: 14px; font-weight: 600; }
+        QLabel#resultValue { font-size: 30px; font-weight: 700; color: #38bdf8; padding: 12px 0; }
+        QLabel#muted { color: #94a3b8; }
+        QTabBar::tab { background: #111c2f; padding: 9px 16px; }
+        QTabBar::tab:selected { background: #1e3a5f; color: #7dd3fc; }
+
+        QFrame#navigationRail { background: #0f192b; border-right: 1px solid #24334b; }
+        QFrame#navigationRail QLabel { background: transparent; }
+        QLabel#brandTitle { font-size: 23px; font-weight: 700; color: #f8fafc; }
+        QLabel#railFootnote { color: #64748b; line-height: 1.5; padding: 12px 4px; }
+        QListWidget#pageNavigation { background: transparent; border: none; outline: none; }
+        QListWidget#pageNavigation::item { color: #94a3b8; border-radius: 8px; padding-left: 10px; }
+        QListWidget#pageNavigation::item:hover { background: #172841; color: #e2e8f0; }
+        QListWidget#pageNavigation::item:selected { background: #193455; color: #bae6fd; border: 1px solid #2b5680; }
+        QFrame#controlDock { background: #101d30; border: 1px solid #293d59; border-radius: 10px; }
+        QFrame#controlDock QLabel { background: transparent; }
+        QPushButton#stimulusButton { background: #0e5266; border-color: #16748b; color: #cffafe; }
+        QPushButton#stopButton { color: #fecdd3; border-color: #704050; }
+        QPushButton:disabled { color: #64748b; background: #152033; border-color: #29364b; }
+        QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled { color: #64748b; }
+        QScrollBar:vertical { background: #0b1220; width: 8px; margin: 0; }
+        QScrollBar::handle:vertical { background: #334155; min-height: 28px; border-radius: 4px; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QToolTip { color: #e2e8f0; background: #1e293b; border: 1px solid #475569; }
+    """
+
+
 def main() -> int:
     pg.setConfigOptions(antialias=False, background="#0f172a", foreground="#cbd5e1")
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("NeuroScope")
     app.setFont(_application_font(app))
-    app.setStyleSheet(
-        """
-        QWidget { background: #0b1220; color: #e2e8f0; }
-        QGroupBox { border: 1px solid #334155; border-radius: 7px; margin-top: 9px; padding-top: 8px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #94a3b8; }
-        QLineEdit, QSpinBox, QComboBox, QTableWidget { background: #111c2f; border: 1px solid #334155; border-radius: 4px; padding: 5px; }
-        QPushButton { background: #1e293b; border: 1px solid #475569; border-radius: 5px; padding: 7px 12px; }
-        QPushButton:hover { background: #334155; }
-        QPushButton#primaryButton { background: #2563eb; border-color: #3b82f6; }
-        QLabel#appTitle { font-size: 24px; font-weight: 700; color: #f8fafc; }
-        QLabel#statusValue { font-size: 17px; font-weight: 600; }
-        QLabel#resultValue { font-size: 30px; font-weight: 700; color: #38bdf8; padding: 12px 0; }
-        QLabel#muted { color: #94a3b8; }
-        QTabBar::tab { background: #111c2f; padding: 9px 16px; }
-        QTabBar::tab:selected { background: #1e3a5f; color: #7dd3fc; }
-        """
-    )
+    app.setStyleSheet(_application_stylesheet())
     window = NeuroScopeWindow()
     window.show()
     return app.exec()

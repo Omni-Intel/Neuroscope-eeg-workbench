@@ -1,0 +1,12 @@
+# Report reference contract
+Reference: D:\8.21\output_fpzref\reports\HW-NEURACLE-FPZREF_N-back_EEG预处理频域与分类基线分析报告.docx
+SHA-256: d48895758e82c5fb4cc84f2e3419a4162db5dc37506bb046803b016bb93be0fa
+Inspected: all 8 Word-rendered pages, one portrait US Letter section; 1 inch margins, header/footer 710 twips.
+Reference renders: .qa/report-template/reference-1.png through reference-8.png.
+Typography: Microsoft YaHei. Title 27 pt bold #17365D, before 54 pt / after 8 pt; subtitle 14.5 pt #1F4D78 / after 20 pt. Heading 1 16 pt blue, Heading 2 13 pt, Heading 3 12 pt; exact source run properties retained as styles. Body 10.5 pt, 1.1 line spacing, after 6 pt; tables 9 pt, 1.05 spacing; captions centered 9 pt gray.
+Components: borderless tables with #D9EAF7 header; #EAF2F8 conclusion boxes; header right aligned gray 8.5 pt, research-only footer centered gray 9 pt. Actual table and cell properties retained in sanitized template prototypes.
+First page: participant/device title, task-specific subtitle, eight-row project/content table (participant, effective task, acquisition system, analysis electrodes, rereference, preprocessing, synchronization, analysis date), boundary text and core finding box. No acquisition timestamp, UUID or software version in the first table.
+Content flow: executive summary; data availability; processing and artifact screening; actual task analysis; impedance; final question/conclusion/evidence table and suggestions. Full channel details and provenance may follow as an appendix. Unsupported N-back, historical comparisons, Fpz rereferencing, artifact labels and complexity measures must not be invented.
+Slots: all reference body text and original figures are replaceable; source-specific header identity is replaceable. Keep page geometry, fonts, table/callout patterns and footer. Titles/heading structure adapt to SSVEP/MI/general tasks. No clinical or brand-grade verdicts. Simulation stated prominently. Missing metrics remain unavailable with reasons/counts.
+Package handling: source inventory in reference-parts.json. Body, header identifier and core metadata intentionally sanitized; original image relationships removed to prevent reference subject data being distributed. Styles, theme, numbering and section layout retained apart from measured direct-format promotion to named styles. No reference charts or results remain.
+Verification: reference SHA unchanged; generated Word all pages inspected; first table fields, status gates and missing evidence covered in regression tests.

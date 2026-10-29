@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from bisect import bisect_right
-from dataclasses import replace
-from itertools import accumulate
 import math
 import random
 import secrets
-from statistics import median
 import time
+from bisect import bisect_right
+from dataclasses import replace
+from itertools import accumulate
+from statistics import median
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPainter, QPixmap
@@ -16,11 +16,11 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from neuroscope_eeg.desktop.audio import AudioPlayer, AudioTimingEvent
 from neuroscope_eeg.desktop.emotion_assets import EmotionImage, load_emotion_manifest, select_emotion_images
 from neuroscope_eeg.desktop.protocols import (
+    NBACK_LEVELS,
     PRESETS,
     PROTOCOL_VERSION,
     STROOP_RESPONSE_KEYS,
     TIMING_STATUS,
-    NBACK_LEVELS,
     NBackScheduleItem,
     ProtocolPreset,
     StimulusEvent,
@@ -35,9 +35,14 @@ from neuroscope_eeg.desktop.protocols import (
     nback_response_is_open,
     signal_detection_metrics,
 )
+from neuroscope_eeg.desktop.trial_schedule import TrialSchedule
+from neuroscope_eeg.desktop.guided_protocol import GuidedFlow
+from neuroscope_eeg.desktop.guided_presentation import GuidedPresentation
+from neuroscope_eeg.protocol_config import AssessmentProtocol
+from neuroscope_eeg.desktop.ssvep_presentation import display_metadata, paint_single_target
 
 
-class StimulusWindow(QOpenGLWidget):
+class StimulusWindow(GuidedPresentation, QOpenGLWidget):
     event_emitted = Signal(object)
     audio_timing = Signal(object)
     stopped = Signal()
@@ -83,6 +88,7 @@ class StimulusWindow(QOpenGLWidget):
         self._emotion_phase_started_at = 0.0
         self._emotion_warning_confirmed = False
         self._ssvep_target_index = 0
+        self._ssvep_flicker_frame = 0
         self._audio_player = audio_player
         self._oddball_sequence = generate_oddball_sequence(1000)
         self._oddball_soa = generate_oddball_soa(1000)
@@ -126,6 +132,18 @@ class StimulusWindow(QOpenGLWidget):
         self.missed_frames = 0
         self.stop_reason = "completed"
         self._pending_frame_events: list[StimulusEvent] = []
+        self._guided = None
+        self._display_timing = None
+        self._paint_serial = self._swapped_serial = 0
+        self._painted_context = ('instruction', 'idle', None)
+        self._guided_ended = False
+        self._space_down = False
+        self._schedule = None
+        self._scheduled_payload = {}
+        self._completed_formal = set()
+        self._observed_phases = set()
+        self._active_scheduled_trial = None
+        self._block_rest_remaining = 0
 
     def start_protocol(
         self,
@@ -134,15 +152,34 @@ class StimulusWindow(QOpenGLWidget):
         preset_label: str = "快速演示",
         *,
         seed: int | None = None,
+        trials_per_condition: int | None = None,
+        practice: bool = False,
+        assessment_protocol: AssessmentProtocol | None = None,
     ) -> None:
+        if assessment_protocol is not None:
+            assessment_protocol.validate()
+            if assessment_protocol.paradigm != paradigm:
+                raise ValueError("实验设置与所选范式不一致")
         if paradigm in {"听觉 ASSR", "听觉 Oddball"} and self._audio_player is None:
             self._audio_player = AudioPlayer()
+        self._guided = GuidedFlow(assessment_protocol) if assessment_protocol else None
+        self._guided_ended = False
+        self._space_down = False
         self.paradigm = paradigm
         self.preset_label = preset_label
         self.preset = PRESETS[preset_label]
+        self._schedule = (TrialSchedule(4 if paradigm == "SSVEP" else 3,
+                          trials_per_condition if trials_per_condition is not None else (20 if paradigm == "SSVEP" else 30), practice)
+                          if paradigm in {"SSVEP", "运动想象"} and not self._guided else None)
+        self._scheduled_payload = {}
+        self._completed_formal = set()
+        self._observed_phases = set()
+        self._active_scheduled_trial = None
         self.refresh_hz = max(30.0, float(screen.refreshRate()))
         self.ssvep_frequencies = frame_locked_frequencies(self.refresh_hz)
-        self.started_at = time.monotonic()
+        if assessment_protocol and assessment_protocol.single_target:
+            self.ssvep_frequencies = tuple(sorted(self.ssvep_frequencies))
+        self.started_at = self._presentation_time()
         self.frame_index = 0
         self._last_tick = self.started_at
         self._last_phase = ""
@@ -177,8 +214,13 @@ class StimulusWindow(QOpenGLWidget):
         self.showNormal()
         self._place_on_screen(screen)
         interval = max(4, round(1000.0 / self.refresh_hz)) if paradigm == "SSVEP" else 16
+        from neuroscope_eeg.desktop.display_timing import DisplayTiming
+        self._display_timing = DisplayTiming(self.refresh_hz, interval) if paradigm in {'SSVEP', '运动想象'} else None
+        self._paint_serial = self._swapped_serial = 0
         self.timer.start(interval)
         QTimer.singleShot(80, lambda: self._place_on_screen(screen) if self.timer.isActive() else None)
+        ssvep_display = (display_metadata(self, assessment_protocol, screen)
+                         if assessment_protocol and assessment_protocol.single_target else None)
         self._emit(
             "start",
             paradigm,
@@ -189,9 +231,23 @@ class StimulusWindow(QOpenGLWidget):
                 "seed": self.protocol_seed,
                 "timing_status": TIMING_STATUS,
                 "display_refresh_hz": self.refresh_hz,
+                "presentation_clock": 'perf_counter' if self._display_timing else 'monotonic',
+                "presentation_clock_resolution_sec": time.get_clock_info('perf_counter' if self._display_timing else 'monotonic').resolution,
                 "ssvep_frequencies": self.ssvep_frequencies if paradigm == "SSVEP" else (),
+                "ssvep_display": ssvep_display,
+                "ssvep_condition_sequence": ([s.payload['condition_index'] for s in self._guided.steps
+                                               if s.phase == 'flicker' and not s.payload['is_practice']]
+                                              if assessment_protocol and assessment_protocol.single_target else None),
+                "planned_formal_trials": assessment_protocol.total_trials if assessment_protocol else (self._schedule.total if self._schedule else None),
+                "trials_per_condition": assessment_protocol.total_trials // assessment_protocol.conditions if assessment_protocol else (self._schedule.per_condition if self._schedule else None),
+                "practice_enabled": bool(assessment_protocol.practice_per_condition) if assessment_protocol else practice,
+                "assessment_protocol": assessment_protocol.to_dict() if assessment_protocol else None,
+                "planned_duration_sec": assessment_protocol.minimum_duration_sec if assessment_protocol else (self._schedule.duration if self._schedule else None),
             },
         )
+
+        if self._guided:
+            self._enter_guided_step()
 
     def _place_on_screen(self, screen) -> None:
         handle = self.windowHandle()
@@ -218,10 +274,16 @@ class StimulusWindow(QOpenGLWidget):
         if self.paradigm == "情绪图片唤醒":
             final_payload.update(self._emotion_payload())
         final_payload.update(self.summary())
+        if self._display_timing:
+            final_payload['display_timing'] = self._display_timing.snapshot()
         self._emit("stop", self.paradigm, final_payload)
         self.timer.stop()
         self._pending_frame_events.clear()
-        self.hide()
+        self._guided_ended = bool(self._guided and reason == "completed" and self._guided.step.phase == "protocol_complete")
+        if not self._guided_ended:
+            self.hide()
+        else:
+            self.update()
         self.stopped.emit()
 
     def _prepare_protocol(self) -> None:
@@ -317,6 +379,12 @@ class StimulusWindow(QOpenGLWidget):
             )
         if self.paradigm == "Stroop 色词冲突":
             result.update(self._stroop_summary())
+        if self._guided:
+            result["planned_formal_trials"] = self._guided.plan.total_trials
+            result["completed_formal_trials"] = len(self._completed_formal)
+        if self._schedule:
+            result["planned_formal_trials"] = self._schedule.total
+            result["completed_formal_trials"] = len(self._completed_formal)
         return result
 
     def _nback_summary(self) -> dict[str, float | int | None]:
@@ -414,22 +482,38 @@ class StimulusWindow(QOpenGLWidget):
             else 0.0,
         }
 
+    def _presentation_time(self):
+        # GetTickCount64 in Windows Python <=3.12 has 15.6 ms resolution.
+        # Keep event timestamps in the existing host domain; only presentation
+        # phase scheduling and interval diagnostics use QPC / perf_counter.
+        return time.perf_counter() if self.paradigm in {'SSVEP', '运动想象'} else time.monotonic()
+
+    def _display_context(self):
+        if self._guided:
+            step = self._guided.step
+            return (step.payload.get('segment', 'instruction'), step.phase, step.payload.get('trial'))
+        return ('formal', self._last_phase.partition(':')[0], self._trial_index)
+
     def _tick(self) -> None:
-        now = time.monotonic()
+        now = self._presentation_time()
+        if self._display_timing:
+            self._display_timing.observe('timer', now, self._display_context())
         expected = 1.0 / self.refresh_hz if self.paradigm == "SSVEP" else 0.016
         gap = now - self._last_tick
         self._last_tick = now
         elapsed = now - self.started_at
         if self.paradigm == "SSVEP":
             expected_frame = int(elapsed * self.refresh_hz)
-            if expected_frame > self.frame_index + 1:
-                self.missed_frames += expected_frame - self.frame_index - 1
             self.frame_index = expected_frame
+            if self._display_timing:
+                self.missed_frames = self._display_timing.rows['timer', 'all']['estimated_skipped_slots']
         else:
             if gap > expected * 1.8:
                 self.missed_frames += max(1, round(gap / expected) - 1)
             self.frame_index += 1
-        if self.paradigm == "SSVEP":
+        if self._guided:
+            self._tick_guided(now)
+        elif self.paradigm == "SSVEP":
             self._update_ssvep(elapsed)
         elif self.paradigm == "运动想象":
             self._update_motor_imagery(elapsed)
@@ -453,17 +537,43 @@ class StimulusWindow(QOpenGLWidget):
             self._update_emotion(elapsed)
         self.update()
 
+    def _scheduled_position(self, elapsed):
+        if self._schedule is None:
+            return int(elapsed // 9), elapsed % 9
+        position = self._schedule.position(elapsed)
+        previous = self._active_scheduled_trial
+        if previous and (position.get("trial") != previous["trial"]):
+            required = {"cue", "flicker", "rest"} if self.paradigm == "SSVEP" else {"fixation", "cue", "imagery", "rest"}
+            if required <= self._observed_phases:
+                if not previous["is_practice"]:
+                    self._completed_formal.add(previous["formal_trial_index"])
+                self._emit("trial_complete", "试次完成", previous)
+            self._active_scheduled_trial = None
+            self._observed_phases = set()
+        if position["stage"] == "complete":
+            self.stop_protocol()
+            return None
+        if position["stage"] == "block_rest":
+            self._block_rest_remaining = math.ceil(position["remaining"])
+            self._set_phase("block_rest", "组间休息", position)
+            return None
+        if self._active_scheduled_trial is None:
+            self._active_scheduled_trial = dict(position)
+        self._scheduled_payload = {k: v for k, v in position.items() if k not in {"within", "stage"}}
+        return position["trial"], position["within"]
+
     def _update_ssvep(self, elapsed: float) -> None:
-        trial_duration = 9.0
-        trial = int(elapsed // trial_duration)
-        within = elapsed % trial_duration
+        position = self._scheduled_position(elapsed)
+        if position is None:
+            return
+        trial, within = position
         self._ssvep_target_index = trial % len(self.ssvep_frequencies)
         target = self.ssvep_frequencies[self._ssvep_target_index]
         if trial != self._trial_index:
             self._trial_index = trial
             self.trials += 1
             self.targets += 1
-        payload = {"trial": trial, "target_frequency": target, "ssvep_frequencies": self.ssvep_frequencies}
+        payload = {**self._scheduled_payload, "trial": trial, "target_frequency": target, "ssvep_frequencies": self.ssvep_frequencies}
         if within < 2.0:
             self._set_phase("cue", f"注视 {target:g} Hz", payload)
         elif within < 7.0:
@@ -472,10 +582,11 @@ class StimulusWindow(QOpenGLWidget):
             self._set_phase("rest", "休息", payload)
 
     def _update_motor_imagery(self, elapsed: float) -> None:
+        position = self._scheduled_position(elapsed)
+        if position is None:
+            return
         classes = ("左手", "右手", "静息")
-        trial_duration = 9.0
-        trial = int(elapsed // trial_duration)
-        within = elapsed % trial_duration
+        trial, within = position
         label = classes[trial % len(classes)]
         if within < 2.0:
             phase = "fixation"
@@ -488,7 +599,7 @@ class StimulusWindow(QOpenGLWidget):
         if trial != self._trial_index:
             self._trial_index = trial
             self.trials += 1
-        self._set_phase(phase, label, {"trial": trial})
+        self._set_phase(phase, label, {**self._scheduled_payload, "trial": trial, "condition": label})
 
     def _update_rsvp(self, now: float) -> None:
         if now - self._last_item_at < 0.25:
@@ -947,6 +1058,8 @@ class StimulusWindow(QOpenGLWidget):
         self._next_tone_at = now + soa
 
     def _set_phase(self, phase: str, label: str, payload: dict | None = None) -> None:
+        if self._schedule and phase in {"cue", "flicker", "fixation", "imagery", "rest"}:
+            self._observed_phases.add(phase)
         key = f"{phase}:{label}"
         if key == self._last_phase:
             return
@@ -1028,9 +1141,11 @@ class StimulusWindow(QOpenGLWidget):
         )
 
     def _is_frame_locked_event(self, phase: str) -> bool:
+        if self._guided is not None:
+            return phase not in {"start", "stop", "instruction_advance", "baseline_audio_cue", "audio_offset"}
         phases = {
             "SSVEP": {"flicker", "rest"},
-            "运动想象": {"fixation", "cue", "rest"},
+            "运动想象": {"fixation", "cue", "imagery", "rest"},
             "视觉图像识别": {"stimulus", "stimulus_offset"},
             "注意力": {"problem", "problem_offset", "rest"},
             "静息睁眼/闭眼": {"eyes_open", "eyes_closed", "transition"},
@@ -1045,11 +1160,16 @@ class StimulusWindow(QOpenGLWidget):
         return phase in phases.get(self.paradigm, set())
 
     def _on_frame_swapped(self) -> None:
+        presentation_time = self._presentation_time()
+        if self.timer.isActive() and self._display_timing and self._paint_serial != self._swapped_serial:
+            self._display_timing.observe('frame_swapped', presentation_time, self._painted_context)
+            self._swapped_serial = self._paint_serial
         if not self._pending_frame_events:
             return
         pending, self._pending_frame_events = self._pending_frame_events, []
         onset_time = time.monotonic()
         wall_time = time.time()
+        self._ack_guided_frame(presentation_time, pending)
         for event in pending:
             self.event_emitted.emit(
                 replace(
@@ -1058,13 +1178,23 @@ class StimulusWindow(QOpenGLWidget):
                     wall_time=wall_time,
                     onset_hook_time=onset_time,
                     hook_type="frame_swapped",
+                    payload={**event.payload, 'presentation_perf_counter': presentation_time} if self._display_timing else event.payload,
                 )
             )
 
-    def paintGL(self) -> None:  # noqa: N802
+        if self._guided and self._guided.step.phase == "protocol_complete" and self.timer.isActive():
+            self.stop_protocol()
+
+    def paintGL(self) -> None:
+        self._paint_serial += 1
+        self._painted_context = self._display_context()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        if self.paradigm == "SSVEP":
+        if self._guided and self._paint_guided_screen(painter):
+            pass
+        elif self._last_phase.startswith("block_rest:"):
+            self._paint_center(painter, str(self._block_rest_remaining), "组间休息｜倒计时结束自动继续", QColor("#020617"))
+        elif self.paradigm == "SSVEP":
             self._paint_ssvep(painter)
         elif self.paradigm == "运动想象":
             self._paint_motor_imagery(painter)
@@ -1110,6 +1240,9 @@ class StimulusWindow(QOpenGLWidget):
         painter.end()
 
     def _paint_ssvep(self, painter: QPainter) -> None:
+        if self._guided and self._guided.plan.single_target:
+            paint_single_target(self, painter)
+            return
         width, height = self.width(), self.height()
         phase = self._last_phase.partition(":")[0]
         if phase == "rest":
@@ -1137,7 +1270,7 @@ class StimulusWindow(QOpenGLWidget):
             text = {"左手": "←", "右手": "→", "静息": "●"}.get(label, "●")
             hint = f"提示：{label}"
         elif phase == "imagery":
-            text, hint = label, "持续进行运动想象，不要实际运动"
+            text, hint = label, ("保持放松，不进行运动想象" if label == "静息" else "想象握拳、松开的感觉，不要实际运动")
         else:
             text, hint = "+", "休息"
         self._paint_center(painter, text, hint, QColor("#020617"))
@@ -1297,9 +1430,13 @@ class StimulusWindow(QOpenGLWidget):
             return "number"
         return "shape"
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.stop_protocol("escape")
+            return
+        if self._guided is not None:
+            if event.key() == Qt.Key.Key_Space:
+                self._guided_space(event)
             return
         if self.paradigm == "视觉图像识别" and event.key() == Qt.Key.Key_Space:
             if self._responded_to_item:
@@ -1456,7 +1593,7 @@ class StimulusWindow(QOpenGLWidget):
             self._emotion_phase_started_at = now
             self._emit("emotion_skip", "已跳过当前图片", payload)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.stop_protocol("window_closed")
         if self._audio_player is not None:
             self._audio_player.close()
