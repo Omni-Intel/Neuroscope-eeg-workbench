@@ -15,6 +15,8 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from neuroscope_eeg.desktop.audio import AudioPlayer, AudioTimingEvent
 from neuroscope_eeg.desktop.emotion_assets import EmotionImage, load_emotion_manifest, select_emotion_images
+from neuroscope_eeg.desktop.guided_presentation import GuidedPresentation
+from neuroscope_eeg.desktop.guided_protocol import GuidedFlow
 from neuroscope_eeg.desktop.protocols import (
     NBACK_LEVELS,
     PRESETS,
@@ -35,11 +37,9 @@ from neuroscope_eeg.desktop.protocols import (
     nback_response_is_open,
     signal_detection_metrics,
 )
-from neuroscope_eeg.desktop.trial_schedule import TrialSchedule
-from neuroscope_eeg.desktop.guided_protocol import GuidedFlow
-from neuroscope_eeg.desktop.guided_presentation import GuidedPresentation
-from neuroscope_eeg.protocol_config import AssessmentProtocol
 from neuroscope_eeg.desktop.ssvep_presentation import display_metadata, paint_single_target
+from neuroscope_eeg.desktop.trial_schedule import TrialSchedule
+from neuroscope_eeg.protocol_config import AssessmentProtocol
 
 
 class StimulusWindow(GuidedPresentation, QOpenGLWidget):
@@ -1272,10 +1272,12 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         if phase == "fixation":
             text, hint = "+", "准备"
         elif phase == "cue":
-            text = {"左手": "←", "右手": "→", "静息": "●"}.get(label, "●")
+            text = {"左手": "←", "右手": "→", "双脚": "↓", "舌头": "↑", "静息": "●"}.get(label, "●")
             hint = f"提示：{label}"
         elif phase == "imagery":
-            text, hint = label, ("保持放松，不进行运动想象" if label == "静息" else "想象握拳、松开的感觉，不要实际运动")
+            text = label
+            hint = {"静息": "保持放松，不进行运动想象", "双脚": "想象双脚同时上下活动的感觉，不要实际运动",
+                    "舌头": "想象舌头在口内移动的感觉，舌头与下颌保持放松"}.get(label, "想象握拳、松开的感觉，不要实际运动")
         else:
             text, hint = "+", "休息"
         self._paint_center(painter, text, hint, QColor("#020617"))

@@ -68,7 +68,9 @@ for path in paths:
     assert not list(Path(sys.argv[1]).glob("Reports/**/*.csv"))
     assessment = json.loads((path / "analysis" / reports[0].parent.name / "assessment.json").read_text(encoding="utf-8"))
     assert assessment["run"]["recording_status"] == "aborted"
-    assert assessment["task"]["status"] == "unavailable"
+    assert assessment["task"]["status"] == "pending"
+    assert assessment["task"]["collection_only"] is True
+    assert not assessment["task"]["trials"]  # Aborted on the instructions page, no invented trials.
 assert window._latest_report.name in window.report_status.text()
 assert str(window._latest_report.parent) in window.report_status.text()
 window.resize(1100, 700)

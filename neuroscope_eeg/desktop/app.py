@@ -331,7 +331,7 @@ class NeuroScopeWindow(ConnectionSettings, DeviceDiscoveryActions, AssessmentAct
         self.ssvep_targets.setReadOnly(True)
         self.image_category = QLineEdit("内置字母 / 数字 / 图形")
         self.image_category.setReadOnly(True)
-        self.mi_protocol = QLabel("左手 / 右手 / 静息｜2s 注视 + 1s 提示 + 4s 想象 + 2s 休息")
+        self.mi_protocol = QLabel("左手 → 右手 → 双脚 → 舌头，固定循环｜2s 注视 + 1s 提示 + 4s 想象 + 2s 休息")
         self.mi_protocol.setWordWrap(True)
         self.visual_protocol = QLabel("RSVP 4 项/秒｜看到 ★ 按空格｜目标概率 20%")
         self.visual_protocol.setWordWrap(True)
@@ -1455,6 +1455,12 @@ class NeuroScopeWindow(ConnectionSettings, DeviceDiscoveryActions, AssessmentAct
         if self.controller is None or self._analysis_data is None:
             return
         if self.tabs.currentIndex() != 3 and not self.stimulus_window.timer.isActive():
+            return
+        if self.paradigm_select.currentText() == '运动想象':
+            self.decoder_name.setText('运动想象四条件采集')
+            self.decoder_result.setText('分类模型待接入')
+            self.decoder_detail.setText('保存原始信号与提示标签，供后续训练；本阶段不输出四分类预测或准确率。')
+            self.decoder_metrics.setRowCount(0)
             return
         reason = analysis_block_reason(self.controller.source.metadata, self.paradigm_select.currentText())
         if reason:

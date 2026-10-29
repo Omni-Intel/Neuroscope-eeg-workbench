@@ -1,5 +1,13 @@
 # 0.4.0 实施与验证记录
 
+## 2026-10-29：OmniBCI 正式版 0.2.0
+
+- 使用用户提供的 `omnibci-0.2.0-cp311-abi3-win_amd64.whl`，SHA256 与发布资产一致；同步 `pyproject.toml`、`uv.lock`、安装脚本及部署说明。wheel 仍不提交 Git。
+- 本机 `.venv` 已安装正式版；实测 Python 包版本和 `SDK_VERSION` 均为 `0.2.0`，`SDK_REVISION` 为 `843013ba62f1f05098c8639a657585720ce66a72`。设备记录同时保存 Python 版本、底层版本及 revision。
+- 核对扫描、连接、读数、触发和阻抗接口；所用 Python 接口源码与预览包相同。调用正式 SDK 的串口枚举成功，但候选串口不代表已验证板卡。
+- 22 项设备适配及界面回归通过。新增测试通过正式包的 Board/config/SampleBatch 路径验证 ESP32 8 通道、STM32 32 通道、原始计数／索引／时间戳／触发保留，以及串口／BLE 的发现参数。测试只在硬件边界注入数据，不连接真实设备；连接失败不生成模拟样本的测试继续通过。
+- `uv pip check` 通过。实机 USB/BLE 连通、连续收样、固件兼容和阻抗精度仍需对应硬件验收。
+
 ## 2026-10-29：SSVEP 与 MI 报告证据增补
 
 - 分析升级为 `assessment-v1.2.0`，报告沿用 8.21 模板，版式标识 `reference-8.21-v2`。不修改设备接口、范式流程、默认参数、实验身份及标准数据目录。
@@ -90,7 +98,7 @@
 | --- | --- | --- |
 | Neuracle | 项目内置 JellyFish TCP `DataServerThread` | 接口可导入；连接失败测试确认进入错误状态、无替代数据 |
 | BrainCo | demo 的本地 vendor 适配器 → `bcigo-sdk` 2.1.2 | SDK 可导入；调用 `start_stream` 时指定 `EegSignalSource.NORMAL` |
-| 公司 OmniBCI | `omnibci` 0.2.0.dev0 → `Board.connect` | SDK 可导入、接口签名匹配；校验配置 verified 和 EEG 模式，拒绝 test / shorted / 未知模式 |
+| 公司 OmniBCI | `omnibci` 0.2.0 → `Board.connect` | SDK 可导入、接口签名匹配；校验配置 verified 和 EEG 模式，拒绝 test / shorted / 未知模式 |
 | 通用 LSL / test-头带 | `pylsl` 1.18.2 → 实际 LSL 流 | 接收外部数据，不在连接失败时创建模拟源；发布端是否在使用测试信号仍需核对 |
 | EMOTIV | EmotivPRO 外部录制 + 配对串口 Marker，实验后关联 EDF | 本程序不直接调用实时 EEG SDK，不生成占位 EEG；按此前确认的视频仓库方式实现 |
 

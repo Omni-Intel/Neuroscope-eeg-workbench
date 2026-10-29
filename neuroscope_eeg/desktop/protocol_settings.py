@@ -34,7 +34,7 @@ class ProtocolSettings:
                         if plan.paradigm != p:
                             raise ValueError("保存的范式不匹配")
                         self._protocol_values[p] = plan.to_dict()
-                load_message = "已恢复实验设置；SSVEP 已升级为八目标同时闪烁；试次数向上取整至 8 的倍数，请核对。"
+                load_message = "已恢复实验设置：SSVEP 八目标，MI 四条件固定循环。旧 MI 按每条件次数换算总试次与分组，请核对。"
             except (OSError, ValueError, TypeError):
                 load_message = "部分保存设置无法读取；相应范式使用默认值，请核对。"
         self.trial_group = QGroupBox("实验流程与参数")
@@ -119,7 +119,7 @@ class ProtocolSettings:
         self._protocol_tabs.setTabVisible(3, self._trial_paradigm == 'SSVEP')
         self.protocol_hint.setText(f"总试次和每组试次填写 {default.conditions} 的倍数，各条件等量；末组可少于设定值。\n"
                                    "组间倒计时结束后需按空格继续；练习设 0 可关闭。静息基线每次独立采集。"
-                                   + ('\nSSVEP 每组由低频到高频循环。八个方块位于九宫格外围并同时闪烁，8–15 Hz，间隔 1 Hz；屏幕尺寸未测量时，靶点按屏幕短边 20% 呈现。厘米值仅在填写屏幕尺寸后生效，观看距离请实测填写。' if self._trial_paradigm == 'SSVEP' else ''))
+                                   + ('\nSSVEP 每组由低频到高频循环。八个方块位于九宫格外围并同时闪烁，8–15 Hz，间隔 1 Hz；屏幕尺寸未测量时，靶点按屏幕短边 20% 呈现。厘米值仅在填写屏幕尺寸后生效，观看距离请实测填写。' if self._trial_paradigm == 'SSVEP' else '\nMI 按左手 → 右手 → 双脚 → 舌头固定循环，不随机。当前用于采集，任务响应与分类待接入。'))
 
     def _trial_paradigm_changed(self):
         if not hasattr(self, "trial_group"):

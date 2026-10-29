@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from neuroscope_eeg.profile_config import validate_profile
 from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
+from neuroscope_eeg.profile_config import validate_profile
 from neuroscope_eeg.timing.models import HardwareTriggerSample
 
 
@@ -218,6 +218,7 @@ class OmniBCISource:
         self.metadata = metadata("omnibci", 250, self.metadata.n_channels,
             {"channel_units": ["uV"] * self.metadata.n_channels, **self.profile}, extra={
                 "sdk_version": self.sdk.__version__, "sdk_revision": getattr(self.sdk, "SDK_REVISION", "unknown"),
+                "native_sdk_version": getattr(self.sdk, "SDK_VERSION", "unknown"),
                 "device_model": self.device_type, "endpoint": self.endpoint,
                 "frontend_config": asdict(config) if is_dataclass(config) else str(config),
                 "timestamp_basis": "device_sample_indices", "loss_detection": "sdk_valid_and_sample_indices"})

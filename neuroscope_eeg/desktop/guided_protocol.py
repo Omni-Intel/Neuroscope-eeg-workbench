@@ -30,6 +30,11 @@ def protocol_steps(plan: AssessmentProtocol):
             if plan.eight_target else
             "按目标提示注视相应频率区域；四个目标同时闪烁。无需按键判断。"
             if plan.paradigm == 'SSVEP' else
+            "注视中央十字；← 左手、→ 右手、↓ 双脚（双腿）、↑ 舌头，按此顺序循环。\n"
+            "提示时做好准备，进入想象阶段后想象对应部位运动的感觉，不要实际运动。\n"
+            "左／右手想象反复握拳、松开；双脚想象双脚同时上下活动；舌头想象在口内移动。\n"
+            "保持手脚、舌头和下颌放松，不咬牙、不说话；休息提示出现后停止想象。"
+            if plan.mi_collection else
             "注视中央十字；左箭头表示左手，右箭头表示右手，圆点表示静息。\n"
             "进入想象阶段后，想象对应手反复握拳、松开的感觉，手和手臂保持不动。\n"
             "静息条件只需放松，不进行运动想象。出现休息提示时停止想象。"))]
@@ -41,6 +46,10 @@ def protocol_steps(plan: AssessmentProtocol):
                        "formal_trial_index": None if practice else formal,
                        "is_practice": practice, "block": block, "condition_index": formal % plan.conditions,
                        "segment": "practice" if practice else "formal"}
+            if plan.mi_collection:
+                payload.update(condition=plan.mi_labels[formal % plan.conditions],
+                               condition_code=formal % plan.conditions + 1,
+                               condition_order='cyclic_balanced', mi_mode=plan.mi_mode)
             for phase, duration in plan.phases:
                 steps.append(Step(phase, "", duration, payload=payload))
 

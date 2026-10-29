@@ -35,7 +35,8 @@ def write_protocol_section(layout, report, shown):
     table(["单试次阶段", "计划 / 秒", "完整阶段数", "实测范围 / 秒"], evidence, [1.7, 1.2, 1.2, 2.4])
     paragraph("实测范围来自事件对齐，包含显示调度误差，不等于已验证的物理刺激时长。等待时间另行记录；中止时未结束的阶段不列入范围。"
               "练习与静息不参与任务评分，独立静息用于信号质量观察。"
-              + ("运动想象 ERD 仍使用各试次的提示前基线。" if settings['paradigm'] == '运动想象' else ""))
+              + ("四条件 MI 仅采集，响应分析与分类待接入。" if plan.mi_collection else
+                 "运动想象 ERD 仍使用各试次的提示前基线。" if settings['paradigm'] == '运动想象' else ""))
     if plan.single_target or plan.eight_target:
         display = report['run'].get('protocol_start_payload', {}).get('ssvep_display') or {}
         paragraph('八个等大方块位于九宫格外围，中央为提示区；八个目标同时闪烁，每组按 8–15 Hz 升序循环。固定 FBCCA 识别被提示注视的目标。' if plan.eight_target else '四个等大三角靶贴近屏幕上、右、下、左四边；仅提示目标闪烁，其余保持暗态。每组按频率从小到大循环。'

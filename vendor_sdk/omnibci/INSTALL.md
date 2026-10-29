@@ -1,86 +1,30 @@
-# OmniBCI Python SDK 预览版（非正式发布）
+# OmniBCI Python 0.2.0 部署
 
-这是一个**开发预览 wheel**，不是 GitHub Release，也不会出现在 PyPI 或项目的 Releases 页面。
-它从当前 `master` 构建，包含阻抗检测功能，供合作方提前联调/试用。
+NeuroScope 使用正式发布的 Windows x64 Python wheel：
 
-## 构建信息
+- [发布页](https://github.com/Omni-Intel/omnibci-python/releases/tag/v0.2.0)
+- [下载 omnibci-0.2.0-cp311-abi3-win_amd64.whl](https://github.com/Omni-Intel/omnibci-python/releases/download/v0.2.0/omnibci-0.2.0-cp311-abi3-win_amd64.whl)
+- SHA256：`13e32f6063503eb44d6d5517808bc0d718fd83bae0e6376c6ec5ee69b80d2bdf`
 
-| 项目 | 值 |
-| --- | --- |
-| Python 包版本 | `0.2.0.dev0` |
-| 平台 | Windows x86_64 |
-| Python | 3.11 及以上（abi3 wheel，3.11–3.14 通用） |
-| omnibci-python 提交 | `0b8c342`（`master`，另含预览版本号提交） |
-| SDK 子模块提交 | `843013b`（omnibci-sdk 0.3.0 线） |
-| 构建日期 | 2026-10-26 |
-| 是否 GitHub Release | **否** |
+把 wheel 放在本目录，不用解压。wheel 不随 Git 分发，复制部署目录时需同时携带 `LICENSE`、`SHA256SUMS.txt` 和 `BUILD-INFO.txt`。本项目使用 Python 3.12，该 cp311-abi3 包兼容此环境。
 
-## 安装
-
-建议在独立虚拟环境中安装：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl
-```
-
-验证：
+在仓库根目录运行 `setup-workbench.ps1`，安装脚本会校验 wheel 并按 `uv.lock` 同步依赖。可用以下命令检查版本：
 
 ```powershell
 .\.venv\Scripts\python.exe -c "import omnibci; print(omnibci.__version__, omnibci.SDK_VERSION, omnibci.SDK_REVISION)"
 ```
 
-应输出类似：
+Python 包版本应为 `0.2.0`，不再使用 `0.2.0.dev0`。Python 包版本与底层 SDK 版本分别记录，不根据文件名推断底层版本。
 
-```text
-0.2.0.dev0 0.2.0 843013ba62f1f05098c8639a657585720ce66a72
-```
+## 设备使用
 
-## 阻抗检测用法
+1. 在实验准备页选择“公司 OmniBCI”，选择 ESP32（8 通道）或 STM32（32 通道）。
+2. 选择串口或 BLE 后点击“扫描公司设备”，选取候选地址；也可直接填写 SDK 地址，例如 `serial://COM5`。
+3. 点击“连接并检查数据”。扫描到候选不等于连接成功，以实际收到样本和界面状态为准。
+4. 前端配置必须已验证，且处于 `eeg`、`both_bias` 或 `no_bias` 模式；拒绝 `test`、`shorted` 和未知模式。连接失败不切换模拟源。
 
-```python
-from omnibci import Board
+扫描使用 SDK 的 `Board.discover`，连接与读数使用 `Board.connect/start/read`。串口扫描列出候选串口，不验证板卡身份；BLE 使用 SDK 设备发现。
 
-with Board.connect("serial://COM5") as board:
-    result = board.measure_impedance()  # 默认测量全部已启用通道
-    for channel, value in enumerate(result.values_kohm, start=1):
-        print(channel, "invalid" if value is None else f"{value:.2f} kOhm")
-    print("clipped mask:", hex(result.clipped_mask))
-    # 测量结束后板子保持停止；继续 EEG 采集必须显式调用：
-    # board.start()
-```
+阻抗入口使用 `Board.measure_impedance()`，支持 ESP32 与 STM32。测量与 EEG 采集互斥，测量结束保持停止，正式采集需重新启动。读到阻抗数值不等于已完成硬件精度标定。
 
-也可以直接运行随附示例：
-
-```powershell
-.\.venv\Scripts\python.exe .\example_impedance.py serial://COM5 --mask 0xFF
-```
-
-参数：
-
-- `mask`：8 位通道掩码，`bit 0` 对应 CH1；省略时使用全部已启用通道。
-- `series_kohm`：串联补偿电阻；省略时 SRB1 用 9.98 kΩ、SRB2 用 4.40 kΩ。
-- `window_seconds`：阻抗窗口时长，默认 4 秒。
-- `timeout`：采集窗口的总超时，默认 15 秒。
-
-## 重要说明
-
-- 阻抗测量与 EEG 波形采集**互斥**：测量前会先停止采集，测量结束后保持停止，不会自动恢复 EEG。
-- 测量要求已确认的 EEG 模式配置（`both_bias` / `eeg` / `no_bias`）和至少一个已启用通道。
-- 阻抗值是按 ADS1299 ±6 nA、31.25 Hz LOFF 载波计算的名义值；正式精度验收前应使用已知电阻在目标板上标定。
-- 本预览版只做了离线/模拟测试（172 个 Python 测试通过），**未做本次实机硬件验证**。
-- 这是开发快照：后续功能会继续进入 `master`，正式版本发布后可以直接用正式 wheel 覆盖安装。
-- 不要把该 wheel 上传到 PyPI 或当作正式发布物；如需对外发布，请走项目的 tag/Release 流程。
-
-## 校验
-
-```powershell
-certutil -hashfile .\omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl SHA256
-```
-
-对比 `SHA256SUMS.txt`。如果校验值不一致，请不要安装。
-
-## 许可
-
-本项目采用 BSD-3-Clause 许可证，随附 `LICENSE`。转发 wheel 时请保留该许可证文件。
+版本、接口及离线回归验证不等于实机验收；USB/BLE 连通、实际固件、连续收样和阻抗仍需在对应板卡上确认。

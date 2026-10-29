@@ -3,9 +3,9 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-from docx.shared import Pt
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
@@ -14,7 +14,7 @@ from neuroscope_eeg.reports.layout import ReportLayout
 
 def write_compact(report, destination, figures, title, device_label, shown):
     layout = ReportLayout()
-    doc, p, table = layout.doc, layout.paragraph, layout.table
+    doc, p = layout.doc, layout.paragraph
     def table(headers, rows, widths=None):
         return layout.table(headers, rows, widths, compact=True)
     doc.styles['Title'].paragraph_format.space_before = Pt(0)
@@ -27,6 +27,7 @@ def write_compact(report, destination, figures, title, device_label, shown):
     doc.styles['Normal']._element.get_or_add_pPr().append(snap)
     run, dev, task, protocol = (report[k] for k in ('run', 'device', 'task', 'protocol'))
     ssvep = run['paradigm'] == 'SSVEP'
+    collection_only = task.get('collection_only', False)
     simulated = run.get('simulated', False)
     evidence = task.get('response_evidence', {})
     profile = report['profile']
@@ -60,15 +61,26 @@ def write_compact(report, destination, figures, title, device_label, shown):
     p(('本次为模拟 / 回放数据，仅验证流程，不代表真实设备性能。' if simulated else '本报告描述本次记录，不能据此确定设备总体等级或被试能力。')
       + ('已获得可计算的任务响应和固定算法结果。' if task['status'] == 'available' else '任务指标暂不可用：' + task.get('reason', '证据不足')), '结果摘要')
     if dev['source_type'] == 'simulated' and dev['source_id'] == 'simulated':
-        p('当前模拟源独立循环生成信号，不随提示产生对应 SSVEP 或左右手运动想象响应；准确率与响应数值仅用于检查软件流程。')
+        p('当前模拟源独立循环生成信号，不随提示产生对应任务响应；仅用于检查采集与报告流程。' if collection_only else
+          '当前模拟源独立循环生成信号，不随提示产生对应 SSVEP 或左右手运动想象响应；准确率与响应数值仅用于检查软件流程。')
     doc.add_heading('实验完成与数据可用性', 1)
     rows = evidence.get('retention', [])
-    if rows:
+    if collection_only:
+        table(['条件', '计划', '观察', '完成', '数据完整'], [
+            (r['condition'], r['planned'], r['observed'], r['completed'], r['data_complete'])
+            for r in task.get('collection_counts', [])])
+        p('数据完整仅表示阶段、提示标签、样本与时间连续性通过检查，不代表完成了有效运动想象，也不是分类结果。')
+        if task.get('collection_error'):
+            p(task['collection_error'], '采集核查')
+        issues = Counter(r['collection_issue'] for r in task['trials'] if r.get('collection_issue'))
+        if issues:
+            p('；'.join(f'{reason}：{n} 次' for reason, n in issues.items()), '采集核查')
+    elif rows:
         table(['条件', '计划', '完成', '可分析／观察', '筛查后／可分析'], [
             (r['condition'], shown(r['planned']), r['completed'], f"{r['analyzable']}/{r['observed']}", f"{r['clean']}/{r['analyzable']}") for r in rows], [1.1,.8,.8,1.9,1.9])
     else:
         table(['计划正式试次', '实际完成', '可分析'], [(shown(protocol['planned']), shown(protocol['completed']), shown(task.get('counts', {}).get('analyzable')))])
-    reasons = Counter(r.get('exclusion_reason') or '原因未记录' for r in task.get('trials', []) if not r.get('analyzable'))
+    reasons = Counter(r.get('exclusion_reason') or '原因未记录' for r in task.get('trials', []) if not collection_only and not r.get('analyzable'))
     if reasons:
         p('；'.join(f'{reason}：{n} 次' for reason, n in reasons.items()), '不可分析原因')
     screening = rows[0].get('screening_reasons', {}) if rows else {}
@@ -150,7 +162,12 @@ def write_compact(report, destination, figures, title, device_label, shown):
         ci=row.get('ci95')
         return shown(row['mean']) + (f" [{shown(ci[0])}, {shown(ci[1])}]" if ci else ' [区间不足]')
     conditions = [r['condition'] for r in rows if r['condition'] != '全部']
-    if not summary:
+    if collection_only:
+        p('本阶段保存左手、右手、双脚、舌头四条件数据，供后续模型训练。保留以下报告栏目，四条件任务分析尚未实现；不沿用旧左右手／静息结果。')
+        for heading in ('基线与任务功率', 'μ／β 去同步及时间变化', '响应的时频分布', '左右侧化', '休息早期的 β 恢复'):
+            doc.add_heading(heading, 2)
+            p('待更改：四条件分析方法与适用电极待确定，本次不输出数值或图像。')
+    elif not summary:
         p(task.get('reason') or '没有可用的补充响应结果。')
         p('不可分析不应解读为设备表现差。')
     elif ssvep:
@@ -245,7 +262,10 @@ def write_compact(report, destination, figures, title, device_label, shown):
 
     start = group_start()
     doc.add_heading('固定算法与综合结论', 1)
-    if task['status']=='available':
+    if collection_only:
+        table(['内容', '状态'], [('四分类模型', '待接入'), ('准确率与混淆矩阵', '待更改：本次未计算')])
+        p('当前只采集带提示标签的数据，不训练、不预测；标签不证明实际执行了对应想象。后续训练与独立验证应分开。')
+    elif task['status']=='available':
         p(f"固定 FBCCA，三个子带与三次谐波，不训练个人模板；{len(run.get('protocol_start_payload', {}).get('ssvep_frequencies', [])) or 4} 目标，名义随机水平 {100/(len(run.get('protocol_start_payload', {}).get('ssvep_frequencies', [])) or 4):g}%。" if ssvep else
           '固定 μ 频带 C3−C4 功率变化 dB 差 >0.6 判左手、<−0.6 判右手，其余未判定；静息不计入二分类，名义随机水平 50%。')
         table(['范围','n','准确率 [95%区间]','平衡准确率','判定覆盖率'], [
@@ -266,7 +286,8 @@ def write_compact(report, destination, figures, title, device_label, shown):
     flagged=[c['channel'] for c in channels if (c.get('flat_fraction') or 0)>0 or (c.get('large_amplitude_fraction') or 0)>0 or c['finite_fraction']<1]
     p('仅验证流程，不能据模拟信号评价设备。' if simulated else
       (f'发现 {len(flagged)} 个通道存在幅值或非有限值线索，需复核：'+ '、'.join(flagged[:12])+('等。' if len(flagged)>12 else '。') if flagged else ('已执行的幅值筛查未标记明显异常；不排除其他干扰。' if any(c.get('flat_fraction') is not None for c in channels) else '缺少已确认单位与类型的通道，幅值质量暂不可评估。')), '信号质量')
-    p('响应可作本次描述，需结合电极位置、任务执行和同步证据解释。' if task['status']=='available' else '任务证据不足，不能据此判断设备表现差。','任务响应')
+    p('四条件任务响应分析待更改、分类模型待接入，本次不作任务表现结论。' if collection_only else
+      '响应可作本次描述，需结合电极位置、任务执行和同步证据解释。' if task['status']=='available' else '任务证据不足，不能据此判断设备表现差。','任务响应')
     p('接触结论仅限本次测量时点。' if report['impedance'] else '缺少实际接触测量，不能评价。','电极接触')
     p('优先核对异常窗口、排除原因、参考方式和同步依据，再按相同条件复测；单次结果不能支持跨设备排名、能力判断或医疗诊断。','建议')
     if evidence.get('errors'):

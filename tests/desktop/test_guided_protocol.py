@@ -1,13 +1,13 @@
-from collections import Counter
-from dataclasses import replace
 import os
 import subprocess
 import sys
+from collections import Counter
+from dataclasses import replace
 
 import pytest
 
-from neuroscope_eeg.protocol_config import AssessmentProtocol
 from neuroscope_eeg.desktop.guided_protocol import GuidedFlow, protocol_steps
+from neuroscope_eeg.protocol_config import AssessmentProtocol
 
 
 @pytest.mark.parametrize("paradigm", ["SSVEP", "运动想象"])
@@ -142,6 +142,13 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
             for trial in formal:
                 phases = [e.phase for e in events if e.payload.get('trial') == trial.payload['trial']]
                 assert phases == ['fixation','cue','prep','flicker','rest','trial_complete']
+        else:
+            formal = [e for e in events if e.phase == 'imagery' and not e.payload['is_practice']]
+            assert [e.payload['condition'] for e in formal] == ['左手','右手','双脚','舌头'] * 3
+            assert [e.payload['condition_code'] for e in formal] == [1,2,3,4] * 3
+            from neuroscope_eeg.timing.codebook import event_code_for
+            cues = [e for e in events if e.phase == 'cue' and not e.payload['is_practice']]
+            assert [event_code_for(e.paradigm, e.phase, e.payload, e.label).code for e in cues] == [1,2,3,4] * 3
         audio.play_tone.assert_not_called()
         assert not any(e.phase == 'baseline_audio_cue' for e in events)
         now[0] += 1
@@ -157,18 +164,18 @@ control = NeuroScopeWindow(settings_path=settings)
 control.protocol_fields['total_trials'].setValue(16)
 control.protocol_fields['task_sec'].setValue(6)
 control.paradigm_select.setCurrentText('运动想象')
-assert control.protocol_fields['total_trials'].value() == 90
-control.protocol_fields['total_trials'].setValue(9)
+assert control.protocol_fields['total_trials'].value() == 120
+control.protocol_fields['total_trials'].setValue(12)
 control._save_protocol_settings()
 control.close()
 control = NeuroScopeWindow(settings_path=settings)
 assert control.protocol_fields['total_trials'].value() == 16
 assert control.protocol_fields['task_sec'].value() == 6
 control.paradigm_select.setCurrentText('运动想象')
-assert control.protocol_fields['total_trials'].value() == 9
+assert control.protocol_fields['total_trials'].value() == 12
 assert not control._protocol_tabs.isTabVisible(3)
 control._reset_protocol()
-assert control.protocol_fields['total_trials'].value() == 90
+assert control.protocol_fields['total_trials'].value() == 120
 control.paradigm_select.setCurrentText('SSVEP')
 assert control.protocol_fields['total_trials'].value() == 16
 assert control._protocol_tabs.isTabVisible(3)
@@ -181,5 +188,17 @@ control.close()
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
     result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env,
-                            capture_output=True, text=True, encoding="utf-8", timeout=35)
+                            capture_output=True, text=True, encoding="utf-8", timeout=35, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_mi_legacy_recording_and_new_run_are_distinct():
+    old = replace(AssessmentProtocol.defaults('运动想象'), mi_mode='left_right_rest_v1', total_trials=90, block_trials=30)
+    restored = AssessmentProtocol.from_dict(old.to_dict())
+    assert restored.conditions == 3 and restored.mi_labels[-1] == '静息'
+    new = restored.for_new_run()
+    assert new.total_trials == 120 and new.block_trials == 40
+    assert new.mi_labels == ('左手', '右手', '双脚', '舌头')
+    assert AssessmentProtocol.from_dict(new.to_dict()) == new
+    assert new.to_dict()['version'] == 'guided-assessment-v4'
+    assert restored.to_dict()['version'] == 'guided-assessment-v1'

@@ -179,6 +179,7 @@ def event_code_for(
                 "右手": "MI_RIGHT_HAND",
                 "双脚": "MI_BOTH_FEET",
                 "舌": "MI_TONGUE",
+                "舌头": "MI_TONGUE",
             }.get(label)
             return definition_by_symbol(symbol) if symbol else None
     elif key == "visual_awareness":

@@ -21,7 +21,7 @@ def test_new_and_legacy_protocols_remain_distinct():
     # v1 never stored physical size; retain its legacy fallback when migrating.
     assert restored.for_new_run() == replace(new, target_size_cm=6)
     mi = AssessmentProtocol.defaults('运动想象')
-    assert mi.minimum_duration_sec == 1124
+    assert mi.minimum_duration_sec == 1412
     assert AssessmentProtocol.from_dict(mi.to_dict()).phases == mi.phases
 
 

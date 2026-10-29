@@ -1144,7 +1144,7 @@ requires-dist = [
     { name = "mne", specifier = ">=1.6" },
     { name = "mne-features", marker = "extra == 'desktop'", specifier = ">=0.3,<0.4" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "omnibci", marker = "sys_platform == 'win32' and extra == 'omni'", path = "vendor_sdk/omnibci/omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl" },
+    { name = "omnibci", marker = "sys_platform == 'win32' and extra == 'omni'", path = "vendor_sdk/omnibci/omnibci-0.2.0-cp311-abi3-win_amd64.whl" },
     { name = "openpyxl", marker = "extra == 'desktop'", specifier = ">=3.1,<4" },
     { name = "pyedflib", marker = "extra == 'desktop'", specifier = ">=0.1.40,<0.2" },
     { name = "pylsl", marker = "extra == 'desktop'", specifier = "==1.18.2" },
@@ -1205,13 +1205,13 @@ wheels = [
 
 [[package]]
 name = "omnibci"
-version = "0.2.0.dev0"
-source = { path = "vendor_sdk/omnibci/omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl" }
+version = "0.2.0"
+source = { path = "vendor_sdk/omnibci/omnibci-0.2.0-cp311-abi3-win_amd64.whl" }
 dependencies = [
     { name = "numpy" },
 ]
 wheels = [
-    { filename = "omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl", hash = "sha256:7f4249f5584bc3493e73c1ae42480baf8a4f05600bdd18f3c4428c07ccd94fa5" },
+    { filename = "omnibci-0.2.0-cp311-abi3-win_amd64.whl", hash = "sha256:13e32f6063503eb44d6d5517808bc0d718fd83bae0e6376c6ec5ee69b80d2bdf" },
 ]
 
 [package.metadata]

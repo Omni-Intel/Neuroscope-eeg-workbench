@@ -21,7 +21,7 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.6",
 ]
-omni = ["omnibci==0.2.0.dev0; sys_platform == 'win32'"]
+omni = ["omnibci==0.2.0; sys_platform == 'win32'"]
 brainco = ["bcigo-sdk==2.1.2", "zeroconf>=0.131"]
 desktop = [
   "python-docx>=1.1,<2",
@@ -67,4 +67,4 @@ package = false
 environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
 
 [tool.uv.sources]
-omnibci = { path = "vendor_sdk/omnibci/omnibci-0.2.0.dev0-cp311-abi3-win_amd64.whl" }
+omnibci = { path = "vendor_sdk/omnibci/omnibci-0.2.0-cp311-abi3-win_amd64.whl" }

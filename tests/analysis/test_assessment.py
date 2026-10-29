@@ -102,6 +102,10 @@ def guided_fixture(root, paradigm, **overrides):
     base = AssessmentProtocol.defaults(paradigm)
     if paradigm == 'SSVEP':
         base = replace(base, ssvep_mode='single_target_v2')
+    else:
+        base = replace(base, mi_mode='left_right_rest_v1')
+    if 'mi_mode' in overrides:
+        base = replace(base, mi_mode=overrides.pop('mi_mode'))
     plan = replace(base, total_trials=base.conditions*2, block_trials=base.conditions,
                    task_sec=6, cue_sec=1.5, fixation_sec=2.5, rest_sec=1,
                    eyes_open_sec=5, eyes_closed_sec=5, close_prepare_sec=3, open_recovery_sec=3, block_rest_sec=5)
@@ -119,7 +123,7 @@ def guided_fixture(root, paradigm, **overrides):
             if paradigm == "SSVEP":
                 payload.update(target_frequency=frequencies[payload["condition_index"]], ssvep_frequencies=frequencies)
             else:
-                payload["condition"] = ("左手", "右手", "静息")[payload["condition_index"]]
+                payload["condition"] = plan.mi_labels[payload["condition_index"]]
         add(step.phase, payload, elapsed)
         end = elapsed + (step.duration if step.duration is not None else 1)
         intervals.append((step.phase, payload, elapsed, end))

@@ -181,6 +181,9 @@ def evaluate_task(root, run, device, profile, data, valid, indices, timestamps, 
     except (ValueError, TypeError) as exc:
         result["reason"] = "实验参数不可用：" + str(exc)
         return result
+    if plan and plan.mi_collection:
+        from neuroscope_eeg.analysis.mi_collection import audit_collection
+        return audit_collection(root, run, device, data, valid, indices, timestamps, events, plan)
     windows = plan.analysis_windows() if plan else CONFIG
     durations = dict(plan.phases) if plan else ({"cue": 2, "flicker": 5, "rest": 2} if paradigm == "SSVEP" else {"fixation": 2, "cue": 1, "imagery": 4, "rest": 2})
     result["analysis_windows"] = {k: v for k, v in windows.items() if "relative_" in k}
@@ -344,6 +347,8 @@ def assess(root, progress=lambda _: None):
     fingerprints = {str(p.relative_to(root)): sha256(p) for p in source_files(root)}
     events = read_jsonl(root / "events.jsonl")
     version = ('assessment-v1.4.0' if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v3' else VERSION)
+    if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v4':
+        version = 'assessment-v1.5.0'
     report = {"analysis_version": version, "configuration": deepcopy(CONFIG), "source_session_id": run["session_id"], "run": run,
               "device": device, "profile": profile, "input_sha256": fingerprints,
               "runtime": {"python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__},
@@ -356,7 +361,7 @@ def assess(root, progress=lambda _: None):
                               "置信区间以试次为单位；同一被试内重复试次可能相关，区间仅作描述性参考。",
                               "运动想象反应弱可能来自任务策略、个体差异或采集条件，不能直接归因于设备。"]}
     report["implementation_sha256"] = {p.name: sha256(p) for p in (Path(__file__), Path(__file__).with_name("task_assessment.py"),
-                                       Path(__file__).with_name("response_evidence.py"), Path(__file__).with_name("general_features.py"), Path(__file__).with_name("protocol_segments.py"))}
+                                       Path(__file__).with_name("response_evidence.py"), Path(__file__).with_name("general_features.py"), Path(__file__).with_name("protocol_segments.py"), Path(__file__).with_name("mi_collection.py"))}
     report["impedance"] = [read_json(p) for p in sorted((root / "impedance").glob("*.json")) if ".source." not in p.name]
     report["impedance"] = [r for r in report["impedance"] if r.get("session_id") == run["session_id"] and r.get("source_id") == device["source_id"]]
     stop = next((e for e in reversed(events) if e["phase"] == "stop"), {})

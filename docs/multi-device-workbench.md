@@ -11,7 +11,7 @@
 | 模拟 / NPZ 回放 | 用于验证界面和流程，不能当作真实被试数据交付 |
 | Neuracle | 在 JellyFish 开启转发，填写 IP、端口及实际 EEG 通道数/采样率；辅助通道一并保存 |
 | BrainCo | 使用 demo 的 BCIGo SDK 2.1.2 接口；自动发现或填写 IP、端口；按实际设备确认通道布局和物理单位 |
-| 公司 OmniBCI | 安装项目 `vendor_sdk/omnibci/` 中的 0.2.0.dev0 wheel，选择 esp32 或 stm32，填写如 `serial://COM5` 的连接地址；前端配置必须已验证 |
+| 公司 OmniBCI | 安装项目 `vendor_sdk/omnibci/` 中的 0.2.0 wheel，选择 esp32 或 stm32，填写如 `serial://COM5` 的连接地址；前端配置必须已验证 |
 | 通用 LSL | 在设备上位机开启 LSL，填写 source_id；存在多个匹配流时不自动猜选 |
 | EMOTIV 外部录制 | 在 EmotivPRO 中录 EEG；本程序仅呈现刺激、保存行为和发送串口 Marker |
 | TD10 | 保留原有 EEG/Quality/Markers 三流接入；ADC 计数不冒充微伏 |

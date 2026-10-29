@@ -32,7 +32,7 @@ class GuidedPresentation:
                         self._ssvep_flicker_frame = self.frame_index
                 label = f"目标 {target:g} Hz" if step.phase != "rest" else "休息"
             else:
-                label = ("左手", "右手", "静息")[payload["condition_index"]]
+                label = flow.plan.mi_labels[payload["condition_index"]]
                 payload["condition"] = label
             if payload["trial"] != self._trial_index:
                 self._trial_index = payload["trial"]
