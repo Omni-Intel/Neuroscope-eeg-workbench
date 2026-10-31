@@ -102,7 +102,7 @@ class AssessmentActions(ProtocolSettings):
                 self.report_status.setText(message["progress"])
             if message.get("delivery"):
                 result = message["delivery"]
-                self.delivery_status.setText(result["message"] + ("\n位置：" + result["package"] if result.get("package") else ""))
+                self.delivery_status.setText("原始记录已保存。\n" + result["message"] + ("\n位置：" + result["package"] if result.get("package") else ""))
             if message.get("report"):
                 self._current_report = self._latest_report = Path(message["report"])
 

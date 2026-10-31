@@ -81,6 +81,35 @@ def test_ssvep_known_targets_noise_and_reproducibility(tmp_path):
     assert fbcca(x, 250, [8, 10, 12, 15])[0] == 2
 
 
+def test_brainco_report_reads_trigger_auxiliaries_not_only_generic_file(tmp_path):
+    root = fixture_record(tmp_path, repeats=1)
+    device_path = root / "device.json"
+    device = json.loads(device_path.read_text(encoding="utf-8"))
+    device["source_type"] = "brainco"
+    device["extra"]["brainco_trigger_sync"] = {"state": "unconfirmed", "error": "ack timeout"}
+    write_json(device_path, device)
+    chunks_path = root / "raw/chunks.jsonl"
+    chunk = json.loads(chunks_path.read_text(encoding="utf-8"))
+    chunk["auxiliaries"] = {"brainco_trigger_events_json": {
+        "value": json.dumps([{"event_seq": 4, "sample_counter": 1024}])}}
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+    report = assess(root)
+    assert report["protocol"]["received_hardware_markers"] == 1
+    summary = report["protocol"]["brainco_triggers"]
+    assert summary["startup_sync"]["state"] == "unconfirmed"
+    assert summary["physical_onset_calibrated"] is False
+    assert summary["alignment_status"] == "device_sample_counter_unmapped"
+    document_path = generate_report(root)
+    from docx import Document
+    text = "\n".join(p.text for p in Document(document_path).paragraphs)
+    assert "BrainCo Trigger：未获确认" in text
+    assert "本段保存 1 条触发记录" in text
+    assert "ack timeout" in text
+    latest = json.loads((root / "analysis/latest.json").read_text(encoding="utf-8"))
+    audit = json.loads((root / "analysis" / latest["generation"] / "brainco_triggers.json").read_text(encoding="utf-8"))
+    assert audit["records"][0]["sample_counter"] == 1024
+
+
 def test_mi_erd_sign_and_side_rule(tmp_path):
     report = assess(fixture_record(tmp_path / "mi", "运动想象"))
     assert report["task"]["all_trials"]["accuracy"] == 1

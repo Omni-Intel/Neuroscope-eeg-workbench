@@ -141,6 +141,9 @@ class ConnectionSettings:
                 state, color = "外部录制已人工确认", "#f59e0b"
         elif c.state is ConnectionState.CONNECTING:
             state, detail = "正在连接", "正在发现或连接设备、核对元数据并等待样本…"
+            backend = getattr(c.source, "backend", None)
+            if c.source.metadata.source_type == "brainco" and backend is not None:
+                detail = f"{backend.startup_stage}｜{backend.startup_target or '等待设备地址'}"
         elif c.state is ConnectionState.RUNNING:
             age = c.last_data_age_sec()
             if c.samples_received == 0 or age is None:
@@ -150,6 +153,18 @@ class ConnectionSettings:
             else:
                 state, color, ready = "已接收数据", "#22c55e", True
                 detail = f"累计 {c.samples_received} 样本｜{c.source.metadata.n_channels} 通道｜{c.source.metadata.sfreq:g} Hz｜最近 {age:.2f} 秒前"
+                if c.source.metadata.source_type == 'omnibci':
+                    from neuroscope_eeg.io.omni_delivery import delivery_profile
+                    meta = c.source.metadata
+                    profile = delivery_profile({'source_type': meta.source_type, 'extra': dict(meta.extra),
+                        'channel_names': meta.channel_names, 'channel_units': meta.channel_units}, meta.extra)
+                    if profile.get('delivery_confirmed'):
+                        detail += '\nEDF 参数已从 SDK 准备；电极位置不影响导出。'
+                        if profile['unrecorded_export_fields']:
+                            labels = {'eeg_reference': '参考接法', 'power_line_frequency': '工频'}
+                            detail += '未记录：' + '、'.join(labels[k] for k in profile['unrecorded_export_fields']) + '。'
+                    else:
+                        detail += '\nEDF 自动配置不可用，需要核对 SDK 版本、单位及前端增益；原始记录仍可保存。'
                 if c.source.metadata.source_type == "brainco":
                     backend = c.source.backend
                     target = backend._cached_discovery_target or (backend._brainco_addr, backend._brainco_port)

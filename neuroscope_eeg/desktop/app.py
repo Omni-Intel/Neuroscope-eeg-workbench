@@ -566,7 +566,7 @@ class NeuroScopeWindow(ConnectionSettings, DeviceDiscoveryActions, AssessmentAct
         self.td10_group.setVisible(is_td10)
         self.extra_device_group.setVisible(source in {"公司 OmniBCI", "通用 LSL", "EMOTIV 外部录制"})
         self.extra_device_group.setTitle(source)
-        for widget in (self.omni_endpoint, self.omni_type, self.impedance_button, self.omni_transport, self.omni_scan_button):
+        for widget in (self.omni_endpoint, self.omni_type, self.impedance_button, self.omni_transport, self.omni_scan_button, self.omni_profile_button):
             self._extra_device_form.setRowVisible(widget, source == "公司 OmniBCI")
         self._extra_device_form.setRowVisible(self.lsl_source_id, source == "通用 LSL")
         for widget in (self.emotiv_receive_port, self.emotiv_recording_confirmed, self.emotiv_scan_button):
@@ -1597,6 +1597,11 @@ class NeuroScopeWindow(ConnectionSettings, DeviceDiscoveryActions, AssessmentAct
         age = self.controller.last_data_age_sec()
         buffered = self.controller.buffer.sample_count()
         data_status = "尚未收到" if age is None else f"{age:.2f}s 前｜缓冲 {buffered}"
+        if metadata.source_type == "brainco":
+            data_status += "｜" + self.controller.source.trigger_status_text
+            self.data_value.setToolTip(self.controller.source.trigger_status.get("error", ""))
+        else:
+            self.data_value.setToolTip("")
         if isinstance(self.controller.source, TD10LSLSource):
             stats = self.controller.source.timing_stats
             valid_ratio = stats["quality_valid_ratio"]

@@ -10,7 +10,7 @@ from itertools import accumulate
 from statistics import median
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPainter, QPixmap
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QKeyEvent, QPainter, QPixmap, QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from neuroscope_eeg.desktop.audio import AudioPlayer, AudioTimingEvent
@@ -49,6 +49,9 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
 
     def __init__(self, audio_player=None) -> None:
         super().__init__()
+        surface_format = QSurfaceFormat(self.format())
+        surface_format.setSwapInterval(1)
+        self.setFormat(surface_format)
         self.setWindowTitle("NeuroScope 刺激呈现")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -134,6 +137,13 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         self._pending_frame_events: list[StimulusEvent] = []
         self._guided = None
         self._display_timing = None
+        self._ssvep_clock = None
+        self._last_swap_time = 0.
+        self._last_swapped_context = None
+        self._ssvep_flicker_onset = None
+        self._ssvep_phase_sec = 0.
+        self._painted_event_count = 0
+        self._painted_frame_index = 0
         self._paint_serial = self._swapped_serial = 0
         self._painted_context = ('instruction', 'idle', None)
         self._guided_ended = False
@@ -218,9 +228,19 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
             self.windowHandle().setScreen(screen)
         self.showNormal()
         self._place_on_screen(screen)
-        interval = max(4, round(1000.0 / self.refresh_hz)) if paradigm == "SSVEP" else 16
+        # For SSVEP the timer only recovers a stalled update chain. The next
+        # picture is requested by frameSwapped, never by a rounded 13/17 ms loop.
+        interval = 100 if paradigm == "SSVEP" else 16
         from neuroscope_eeg.desktop.display_timing import DisplayTiming
+        from neuroscope_eeg.desktop.ssvep_clock import SSVEPFrameClock
         self._display_timing = DisplayTiming(self.refresh_hz, interval) if paradigm in {'SSVEP', '运动想象'} else None
+        self._ssvep_clock = SSVEPFrameClock(self.refresh_hz) if paradigm == 'SSVEP' else None
+        self._last_swap_time = self._presentation_time()
+        self._last_swapped_context = None
+        self._ssvep_flicker_onset = None
+        self._ssvep_phase_sec = 0.
+        self._painted_event_count = 0
+        self._painted_frame_index = 0
         self._paint_serial = self._swapped_serial = 0
         self.timer.start(interval)
         QTimer.singleShot(80, lambda: self._place_on_screen(screen) if self.timer.isActive() else None)
@@ -239,6 +259,8 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
                 "presentation_clock": 'perf_counter' if self._display_timing else 'monotonic',
                 "presentation_clock_resolution_sec": time.get_clock_info('perf_counter' if self._display_timing else 'monotonic').resolution,
                 "ssvep_frequencies": self.ssvep_frequencies if paradigm == "SSVEP" else (),
+                "ssvep_scheduler": self._ssvep_clock.scheduler if self._ssvep_clock else None,
+                "ssvep_timing_anomaly_action": 'record_only' if self._ssvep_clock else None,
                 "ssvep_display": ssvep_display,
                 "ssvep_condition_sequence": ([s.payload['condition_index'] for s in self._guided.steps
                                                if s.phase == 'flicker' and not s.payload['is_practice']]
@@ -253,6 +275,7 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
 
         if self._guided:
             self._enter_guided_step()
+        self.update()
 
     def _place_on_screen(self, screen) -> None:
         handle = self.windowHandle()
@@ -281,6 +304,8 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         final_payload.update(self.summary())
         if self._display_timing:
             final_payload['display_timing'] = self._display_timing.snapshot()
+            if self._ssvep_clock:
+                final_payload['display_timing']['ssvep_frame_clock'] = self._ssvep_clock.snapshot()
         self._emit("stop", self.paradigm, final_payload)
         self.timer.stop()
         self._pending_frame_events.clear()
@@ -500,22 +525,23 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         return ('formal', self._last_phase.partition(':')[0], self._trial_index)
 
     def _tick(self) -> None:
+        if not self.timer.isActive():
+            return
         now = self._presentation_time()
         if self._display_timing:
             self._display_timing.observe('timer', now, self._display_context())
-        expected = 1.0 / self.refresh_hz if self.paradigm == "SSVEP" else 0.016
+        if self._ssvep_clock is not None:
+            if now - self._last_swap_time > .25:
+                self._ssvep_clock.recovery_requests += 1
+                self.update()
+            return
+        expected = 0.016
         gap = now - self._last_tick
         self._last_tick = now
         elapsed = now - self.started_at
-        if self.paradigm == "SSVEP":
-            expected_frame = int(elapsed * self.refresh_hz)
-            self.frame_index = expected_frame
-            if self._display_timing:
-                self.missed_frames = self._display_timing.rows['timer', 'all']['estimated_skipped_slots']
-        else:
-            if gap > expected * 1.8:
-                self.missed_frames += max(1, round(gap / expected) - 1)
-            self.frame_index += 1
+        if gap > expected * 1.8:
+            self.missed_frames += max(1, round(gap / expected) - 1)
+        self.frame_index += 1
         if self._guided:
             self._tick_guided(now)
         elif self.paradigm == "SSVEP":
@@ -1165,13 +1191,24 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         return phase in phases.get(self.paradigm, set())
 
     def _on_frame_swapped(self) -> None:
-        presentation_time = self._presentation_time()
-        if self.timer.isActive() and self._display_timing and self._paint_serial != self._swapped_serial:
-            self._display_timing.observe('frame_swapped', presentation_time, self._painted_context)
-            self._swapped_serial = self._paint_serial
-        if not self._pending_frame_events:
+        if not self.timer.isActive() or self._paint_serial == self._swapped_serial:
             return
-        pending, self._pending_frame_events = self._pending_frame_events, []
+        presentation_time = self._presentation_time()
+        self._swapped_serial = self._paint_serial
+        if self._display_timing:
+            self._display_timing.observe('frame_swapped', presentation_time, self._painted_context)
+        if self._ssvep_clock:
+            self._ssvep_clock.observe(presentation_time, self._painted_context, self._painted_frame_index)
+            if self._painted_context[1] == 'flicker' and self._last_swapped_context != self._painted_context:
+                self._ssvep_flicker_onset = presentation_time
+            self._last_swapped_context = self._painted_context
+            self._last_swap_time = presentation_time
+            self.missed_frames = sum(row['estimated_skipped_slots'] for row in self._ssvep_clock.trials.values())
+        # A phase queued AFTER paintGL must wait for its own painted frame.
+        count = self._painted_event_count
+        pending = self._pending_frame_events[:count]
+        del self._pending_frame_events[:count]
+        self._painted_event_count = 0
         onset_time = time.monotonic()
         wall_time = time.time()
         self._ack_guided_frame(presentation_time, pending)
@@ -1187,12 +1224,34 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
                 )
             )
 
-        if self._guided and self._guided.step.phase == "protocol_complete" and self.timer.isActive():
+        if self._guided and any(e.phase == 'protocol_complete' for e in pending) and self.timer.isActive():
             self.stop_protocol()
+        if self._ssvep_clock and self.timer.isActive():
+            self.frame_index += 1
+            if self._guided:
+                self._tick_guided(presentation_time)
+            else:
+                self._update_ssvep(presentation_time - self.started_at)
+            if self.timer.isActive():
+                self.update()
 
-    def paintGL(self) -> None:
+    def _prepare_painted_frame(self) -> None:
         self._paint_serial += 1
         self._painted_context = self._display_context()
+        self._painted_event_count = len(self._pending_frame_events)
+        self._painted_frame_index = self.frame_index
+        if self._ssvep_clock:
+            # Predict the next swap using the last measured swap, and anchor
+            # phase to the first flicker swap. A slow frame cannot permanently
+            # slow the stimulus frequency: phase remains on perf_counter time.
+            if self._painted_context == self._last_swapped_context and self._ssvep_flicker_onset is not None:
+                predicted = max(self._last_swap_time + 1 / self.refresh_hz, self._presentation_time())
+                self._ssvep_phase_sec = max(0., predicted - self._ssvep_flicker_onset)
+            else:
+                self._ssvep_phase_sec = 0.
+
+    def paintGL(self) -> None:
+        self._prepare_painted_frame()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if self._guided and self._paint_guided_screen(painter):
@@ -1256,9 +1315,8 @@ class StimulusWindow(GuidedPresentation, QOpenGLWidget):
         for index, frequency in enumerate(self.ssvep_frequencies):
             row, column = divmod(index, 2)
             rect = self.rect().adjusted(column * width // 2, row * height // 2, -(1 - column) * width // 2, -(1 - row) * height // 2)
-            frames_per_cycle = max(2, round(self.refresh_hz / frequency))
-            angle = 2.0 * math.pi * (self.frame_index % frames_per_cycle) / frames_per_cycle
-            brightness = 230 if phase == "flicker" and math.sin(angle) >= 0 else 25
+            seconds = self._ssvep_phase_sec if self._ssvep_clock else self.frame_index / self.refresh_hz
+            brightness = 230 if phase == "flicker" and (seconds * frequency + 1e-9) % 1 < .5 else 25
             painter.fillRect(rect, QColor(brightness, brightness, brightness))
             painter.setPen(QColor("#020617") if brightness > 100 else QColor("#f8fafc"))
             painter.setFont(QFont("Microsoft YaHei UI", 28, QFont.Weight.Bold))

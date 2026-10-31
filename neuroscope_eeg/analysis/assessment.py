@@ -349,6 +349,8 @@ def assess(root, progress=lambda _: None):
     version = ('assessment-v1.4.0' if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v3' else VERSION)
     if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v4':
         version = 'assessment-v1.5.0'
+    if run.get('protocol_start_payload', {}).get('assessment_protocol', {}).get('version') == 'guided-assessment-v5':
+        version = 'assessment-v1.6.0'
     report = {"analysis_version": version, "configuration": deepcopy(CONFIG), "source_session_id": run["session_id"], "run": run,
               "device": device, "profile": profile, "input_sha256": fingerprints,
               "runtime": {"python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__},
@@ -382,10 +384,16 @@ def assess(root, progress=lambda _: None):
         report["protocol"]["settings_error"] = str(exc)
     dispatches = read_jsonl(root / "triggerbox_log.jsonl") if (root / "triggerbox_log.jsonl").exists() else []
     hardware = read_jsonl(root / "hardware_triggers.jsonl") if (root / "hardware_triggers.jsonl").exists() else []
+    from neuroscope_eeg.io.brainco_triggers import read_brainco_triggers
+    brainco = read_brainco_triggers(root)
+    if brainco is not None:
+        report["protocol"]["brainco_triggers"] = brainco["summary"]
     report["protocol"].update(hardware_send_requests=sum(bool(r.get("hardware_requested")) for r in dispatches),
                               hardware_send_errors=sum(bool(r.get("hardware_error")) for r in dispatches),
                               lsl_send_errors=sum(bool(r.get("lsl_error")) for r in dispatches),
                               received_hardware_markers=len(hardware) if hardware else None)
+    if brainco is not None:
+        report["protocol"]["received_hardware_markers"] = brainco["summary"]["received_events"]
     if data is not None:
         report["integrity"] = {"samples": len(data), "duration_sec": len(data)/device["sfreq"], "invalid_samples": int((~valid).sum()),
                                "sample_index_gaps": int(np.sum(np.diff(indices) != 1)) if not run["external_recording"] else None,

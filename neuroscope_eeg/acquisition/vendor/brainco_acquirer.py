@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from neuroscope_eeg.acquisition.vendor.base import AbstractAcquirer, AcquirerMetadata, EEGChunk
+from neuroscope_eeg.acquisition.vendor.brainco_config import VerifiedConfigStartup
 
 LOGGER = logging.getLogger(__name__)
 _BRAINCO_MDNS_SERVICE = "_brainco-eeg._tcp.local."
@@ -59,7 +60,7 @@ class BrainCoTriggerEvent:
     received_monotonic: float = 0.0
 
 
-class BrainCoAcquirer(AbstractAcquirer):
+class BrainCoAcquirer(VerifiedConfigStartup, AbstractAcquirer):
     """Wrap BrainCo's async TCP SDK behind the unified acquirer API."""
 
     def __init__(
@@ -99,6 +100,7 @@ class BrainCoAcquirer(AbstractAcquirer):
         self._signal_source = signal_source.strip().upper() or "NORMAL"
         self._device_id = device_id
         self._enable_trigger_sync = bool(enable_trigger_sync)
+        self.trigger_sync_status = {"state": "not_requested", "error": ""}
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -123,9 +125,23 @@ class BrainCoAcquirer(AbstractAcquirer):
         self._last_raw_packet_monotonic = 0.0
         self._last_msg_response_monotonic = 0.0
         self._cached_discovery_target: tuple[str, int] | None = None
+        self.startup_stage = "尚未启动"
+        self.startup_target = ""
+        self._startup_diagnostics = False
+        self._init_config_verification()
+        self.last_device_timestamps = np.empty(0, dtype=np.float64)
+        self._layout_logged = False
+
+    def _startup_step(self, stage):
+        self.startup_stage = stage
+        LOGGER.warning("BrainCo startup stage=%s target=%s", stage, self.startup_target or "unresolved")
 
     def start_stream(self) -> None:
         import bcigo_sdk as sdk
+
+        LOGGER.warning("BrainCo SDK version=%s module=%s sfreq=%s channels=%s gain=%s signal=%s",
+                       getattr(sdk, "__version__", "unknown"), getattr(sdk, "__file__", "unknown"),
+                       self.metadata.sfreq, self.metadata.n_channels, self._eeg_gain, self._signal_source)
 
         if self._client is not None:
             self.stop_stream()
@@ -133,7 +149,11 @@ class BrainCoAcquirer(AbstractAcquirer):
         last_error: Exception | None = None
 
         for attempt in range(1, self._start_retries + 1):
+            self.trigger_sync_status = {"state": "not_requested", "error": ""}
             self._sdk = sdk
+            self._init_config_verification()
+            self.last_device_timestamps = np.empty(0, dtype=np.float64)
+            self._layout_logged = False
             self._first_sample_event.clear()
             self._response_event.clear()
             with self._cache_lock:
@@ -153,8 +173,14 @@ class BrainCoAcquirer(AbstractAcquirer):
             self._last_msg_response_monotonic = 0.0
             self._start_loop_thread()
             try:
+                self._startup_diagnostics = True
+                self.startup_target = ""
+                self._startup_step("发现设备" if self._auto_discover else "读取手动地址")
                 addr, port = self._resolve_addr_port()
+                self.startup_target = f"{addr}:{port}"
+                self._startup_step("设备地址已确定，创建 SDK 客户端")
                 self._client = self._run_sdk_call(sdk.BCIGoClient, addr, port)
+                self._startup_step("创建解析器与注册回调")
                 parser = sdk.MessageParser(self._device_id, sdk.MsgType.BCIGo)
                 self._register_sdk_callbacks()
                 if hasattr(self._client, "start_stream"):
@@ -162,18 +188,25 @@ class BrainCoAcquirer(AbstractAcquirer):
                 else:
                     self._start_stream_legacy(parser)
                 self._enable_sdk_trigger_sync()
+                self._startup_step("已收到 EEG，启动完成")
+                self._startup_diagnostics = False
                 break
             except Exception as exc:
                 last_error = exc
-                LOGGER.warning(
-                    "BrainCo stream start attempt %s/%s failed: %s",
+                LOGGER.exception(
+                    "BrainCo stream start attempt %s/%s failed: %s (stage=%s target=%s)",
                     attempt,
                     self._start_retries,
                     exc,
+                    self.startup_stage,
+                    self.startup_target,
                 )
+                failure = (f"BrainCo {self.startup_stage}失败"
+                           f"（{self.startup_target or '地址尚未确定'}）：{type(exc).__name__}: {exc}")
                 self.stop_stream()
+                self._startup_diagnostics = False
                 if attempt >= self._start_retries:
-                    raise
+                    raise RuntimeError(failure) from exc
                 time.sleep(0.5)
         else:
             if last_error is not None:
@@ -188,13 +221,21 @@ class BrainCoAcquirer(AbstractAcquirer):
         )
 
     def _start_stream_unified(self, parser: Any) -> None:
+        if getattr(self._sdk, "__version__", "") == "2.1.2":
+            self._start_stream_verified(parser)
+        else:
+            self._start_stream_sdk(parser)
+
+    def _start_stream_sdk(self, parser: Any) -> None:
         """Use the SDK's recommended one-key stream startup when available."""
 
         assert self._sdk is not None
         assert self._client is not None
+        self._startup_step("初始化 SDK 数据缓冲")
         buffer_len = max(int(self.metadata.sfreq * min(self._buffer_sec, 60.0)), 1024)
         self._sdk.set_cfg(buffer_len, max(256, int(self.metadata.sfreq)), 256)
         self._sdk.clear_eeg_buffer()
+        self._startup_step("设备地址已确定，SDK 一键启动 EEG")
         self._run_sdk_call(
             self._client.start_stream,
             parser,
@@ -202,6 +243,7 @@ class BrainCoAcquirer(AbstractAcquirer):
             gain=getattr(self._sdk.EegSignalGain, _GAIN_TO_ENUM[self._eeg_gain]),
             signal=getattr(self._sdk.EegSignalSource, self._signal_source),
         )
+        self._startup_step("SDK 启动返回，等待实际 EEG 样本")
         self._wait_for_samples()
 
     def _start_stream_legacy(self, parser: Any) -> None:
@@ -233,20 +275,31 @@ class BrainCoAcquirer(AbstractAcquirer):
         command, which must not take down EEG acquisition.
         """
 
-        if not self._enable_trigger_sync or self._client is None:
+        if not self._enable_trigger_sync:
+            self.trigger_sync_status = {"state": "disabled", "error": ""}
+            return
+        if self._client is None:
             return
         set_trigger_sync = getattr(self._client, "set_trigger_sync", None)
         if set_trigger_sync is None:
+            self.trigger_sync_status = {"state": "unsupported", "error": "SDK does not expose set_trigger_sync"}
             LOGGER.warning(
                 "bcigo_sdk %s does not expose set_trigger_sync; TriggerBox events are unavailable.",
                 getattr(self._sdk, "__version__", "unknown"),
             )
             return
         try:
+            self.trigger_sync_status = {"state": "requesting", "error": ""}
             result = self._run_sdk_call(set_trigger_sync, True)
         except Exception as exc:
+            self.trigger_sync_status = {"state": "unconfirmed", "error": str(exc)}
             LOGGER.warning("BrainCo TriggerBox trigger sync could not be enabled: %s", exc)
             return
+        if result is False:
+            self.trigger_sync_status = {"state": "rejected", "error": "SDK returned False"}
+            LOGGER.warning("BrainCo TriggerBox trigger sync rejected by SDK")
+            return
+        self.trigger_sync_status = {"state": "acknowledged", "error": ""}
         LOGGER.info("BrainCo TriggerBox trigger sync enabled (SDK reply: %r)", result)
 
     def pop_trigger_events(self) -> list[BrainCoTriggerEvent]:
@@ -368,7 +421,7 @@ class BrainCoAcquirer(AbstractAcquirer):
             try:
                 await asyncio.wait_for(self._coerce_sdk_awaitable(initialize()), timeout=3)
             except Exception as exc:  # noqa: BLE001 - SDK discovery boundary
-                LOGGER.warning("BrainCo init_adapter: %s", exc)
+                LOGGER.warning("BrainCo init_adapter: %s: %r", type(exc).__name__, exc)
         scan = getattr(self._sdk, "scan_devices", None)
         if callable(scan):
             try:
@@ -377,7 +430,7 @@ class BrainCoAcquirer(AbstractAcquirer):
                 if target:
                     return target
             except Exception as exc:  # noqa: BLE001 - SDK discovery boundary
-                LOGGER.warning("BrainCo quick scan: %s", exc)
+                LOGGER.warning("BrainCo quick scan: %s: %r", type(exc).__name__, exc)
         target = await self._discover_device_via_callback_async()
         if target:
             return target
@@ -394,7 +447,7 @@ class BrainCoAcquirer(AbstractAcquirer):
                 if target:
                     return target
             except Exception as exc:  # noqa: BLE001 - SDK discovery boundary
-                LOGGER.warning("BrainCo single scan: %s", exc)
+                LOGGER.warning("BrainCo single scan: %s: %r", type(exc).__name__, exc)
             finally:
                 await self._stop_sdk_mdns_scan_async()
                 await self._finish_scan_task(task)
@@ -441,29 +494,43 @@ class BrainCoAcquirer(AbstractAcquirer):
         start = getattr(self._sdk, "mdns_start_scan_multi", None)
         if not callable(start):
             return None
-        loop = asyncio.get_running_loop()
-        discovered = loop.create_future()
+        candidates = []
+        candidate_lock = threading.Lock()
+        accepting = True
         task = None
 
         def on_device(*values):
             target = self._first_valid_discovered_target(values)
-            if target and not discovered.done() and not loop.is_closed():
-                def deliver():
-                    if not discovered.done():
-                        discovered.set_result(target)
-                try:
-                    loop.call_soon_threadsafe(deliver)
-                except RuntimeError:
-                    LOGGER.debug("Ignoring BrainCo discovery callback after loop shutdown")
+            with candidate_lock:
+                if not accepting:
+                    return
+                if target and target not in candidates:
+                    candidates.append(target)
+                    LOGGER.warning("BrainCo multi scan candidate accepted: %s:%s", *target)
+                elif not target:
+                    LOGGER.warning("BrainCo multi scan candidate rejected (missing address/port): %r", values)
         try:
             task = asyncio.ensure_future(self._coerce_sdk_awaitable(start(on_device)))
-            return await asyncio.wait_for(discovered, timeout=self._scan_timeout_sec)
+            # Keep collecting until the SDK has stopped, including callbacks
+            # emitted during stop. A timeout must not cancel the result sink.
+            await asyncio.sleep(self._scan_timeout_sec)
         except Exception as exc:  # noqa: BLE001 - SDK discovery boundary
-            LOGGER.warning("BrainCo multi scan: %s", exc)
-            return None
+            LOGGER.warning("BrainCo multi scan: %s: %r", type(exc).__name__, exc)
         finally:
-            await self._stop_sdk_mdns_scan_async()
-            await self._finish_scan_task(task)
+            try:
+                await self._stop_sdk_mdns_scan_async()
+                if task is not None:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=2)
+                    except Exception as exc:  # noqa: BLE001 - scan session boundary
+                        LOGGER.warning("BrainCo multi scan completion: %s: %r", type(exc).__name__, exc)
+            finally:
+                with candidate_lock:
+                    accepting = False
+                await self._finish_scan_task(task)
+        with candidate_lock:
+            LOGGER.warning("BrainCo multi scan finished: %d valid candidate(s)", len(candidates))
+            return candidates[0] if candidates else None
 
     async def _discover_device_via_zeroconf_async(self) -> tuple[str, int] | None:
         """Fallback to direct Zeroconf browsing when the SDK omits the TCP port."""
@@ -608,7 +675,13 @@ class BrainCoAcquirer(AbstractAcquirer):
 
         assert self._sdk is not None
         take = max(int(self.metadata.sfreq * min(self._buffer_sec, 60.0)), 256)
-        data = self._normalize_buffer(self._sdk.get_eeg_buffer(take, True), allow_empty=True)
+        raw = self._sdk.get_eeg_buffer(take, True)
+        data, ticks = self._split_buffer(raw, allow_empty=True)
+        self.last_device_timestamps = ticks
+        if data.shape[1] and not self._layout_logged:
+            LOGGER.warning("BrainCo buffer layout=%s EEG=%s timestamp_column=%s; count samples by rows, not timestamp uniqueness",
+                           np.shape(raw), data.shape, 0 if ticks.size else "absent")
+            self._layout_logged = True
         if data.shape[1] == 0:
             return data
 
@@ -665,7 +738,7 @@ class BrainCoAcquirer(AbstractAcquirer):
 
     def _handle_connection_state_callback(self, *args: Any) -> None:
         if args:
-            LOGGER.info("BrainCo connection state callback: %s", ", ".join(repr(arg) for arg in args))
+            LOGGER.warning("BrainCo connection state callback: %r", args)
 
     def _handle_received_data_callback(self, *args: Any) -> None:
         self._raw_packet_count += 1
@@ -673,6 +746,9 @@ class BrainCoAcquirer(AbstractAcquirer):
         self._response_event.set()
 
     def _handle_message_response_callback(self, *args: Any) -> None:
+        self._record_config_response(*args)
+        if self._startup_diagnostics:
+            LOGGER.warning("BrainCo startup response stage=%s payload=%r", self.startup_stage, args)
         self._last_msg_response_monotonic = time.monotonic()
         self._response_event.set()
         self._record_trigger_events(args)
@@ -921,32 +997,50 @@ class BrainCoAcquirer(AbstractAcquirer):
         return
 
     def _normalize_buffer(self, raw: Any, *, allow_empty: bool = False) -> np.ndarray:
+        return self._split_buffer(raw, allow_empty=allow_empty)[0]
+
+    def _split_buffer(self, raw: Any, *, allow_empty: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        """SDK 2.1.2 rows: [device timestamp, 32 EEG values]. See native parser test.
+
+        Device timestamp units are not used as seconds. The SDK already rounds them
+        through float32, so retain the exposed values separately and never deduplicate.
+        """
+        empty_ticks = np.empty(0, dtype=np.float64)
         if raw is None:
             raw = []
-        if isinstance(raw, np.ndarray):
-            arr = np.asarray(raw, dtype=np.float32)
-        else:
-            arr = np.asarray(raw, dtype=np.float32)
+        arr = np.asarray(raw)
 
         if arr.size == 0:
             if allow_empty:
-                return np.empty((self.metadata.n_channels, 0), dtype=np.float32)
+                return np.empty((self.metadata.n_channels, 0), dtype=np.float32), empty_ticks
             raise RuntimeError("BrainCo EEG buffer is empty.")
 
         if arr.ndim == 1:
-            if arr.size % self.metadata.n_channels != 0:
-                raise RuntimeError(
-                    f"Unexpected BrainCo buffer size {arr.size} for {self.metadata.n_channels} channels"
-                )
-            arr = arr.reshape(-1, self.metadata.n_channels)
+            if arr.size == 33:
+                arr = arr.reshape(1, 33)
+            else:
+                if arr.size % self.metadata.n_channels != 0:
+                    raise RuntimeError(f"Unexpected BrainCo buffer size {arr.size} for {self.metadata.n_channels} channels")
+                arr = arr.reshape(-1, self.metadata.n_channels)
 
         if arr.ndim != 2:
             raise RuntimeError(f"Unexpected BrainCo buffer shape: {arr.shape}")
 
+        # The native SDK returns sample-major data; prioritize this even for 32 or
+        # 33 samples, where dimension guessing would transpose or shift channels.
+        if arr.shape[1] == 33:
+            ticks = np.asarray(arr[:, 0], dtype=np.float64).copy()
+            eeg = np.asarray(arr[:, 1:33], dtype=np.float32).T
+            if not np.isfinite(ticks).all() or not np.isfinite(eeg).all():
+                raise RuntimeError("BrainCo buffer contains non-finite timestamp/EEG values")
+            return eeg[:self.metadata.n_channels].copy(), ticks
+
         if arr.shape[1] == self.metadata.n_channels:
-            return arr.T
+            return np.asarray(arr.T, dtype=np.float32), empty_ticks
+        if arr.shape[1] == 32:
+            return np.asarray(arr[:, :self.metadata.n_channels].T, dtype=np.float32), empty_ticks
         if arr.shape[0] == self.metadata.n_channels:
-            return arr
+            return np.asarray(arr, dtype=np.float32), empty_ticks
         raise RuntimeError(f"Unexpected BrainCo channel layout: {arr.shape}")
 
     def _start_loop_thread(self) -> None:

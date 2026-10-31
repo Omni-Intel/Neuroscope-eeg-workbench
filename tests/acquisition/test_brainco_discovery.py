@@ -68,6 +68,39 @@ def test_outer_timeout_covers_all_discovery_stages():
     assert b._discover_device() == ("target", 9000)
 
 
+@pytest.mark.parametrize("delivery", ["during_stop", "after_stop", "thread"])
+def test_multi_scan_preserves_candidates_until_session_finishes(delivery):
+    import threading
+
+    async def run():
+        b = BrainCoAcquirer(scan_timeout_sec=.01)
+        loop = asyncio.get_running_loop()
+        session = loop.create_future()
+        callbacks = []
+        def start(callback):
+            callbacks.append(callback)
+            return session
+        def deliver():
+            callbacks[0](SimpleNamespace(addr="192.0.2.10", port=9000))
+        def stop():
+            if delivery == "after_stop":
+                loop.call_later(.01, deliver)
+                loop.call_later(.02, session.set_result, None)
+            else:
+                if delivery == "thread":
+                    worker = threading.Thread(target=deliver)
+                    worker.start()
+                    worker.join()
+                else:
+                    deliver()
+                session.set_result(None)
+        b._sdk = SimpleNamespace(mdns_start_scan_multi=start, mdns_stop_scan=stop)
+        assert await b._discover_device_via_callback_async() == ("192.0.2.10", 9000)
+        assert session.done() and not session.cancelled()
+        callbacks[0](SimpleNamespace(addr="late", port=1))
+    asyncio.run(run())
+
+
 def test_sdk_constructor_runs_in_event_loop_and_failures_cleanup(monkeypatch):
     b = BrainCoAcquirer(brainco_addr="target", brainco_port=9000, auto_discover=False, start_retries=1)
     def constructor(*args):

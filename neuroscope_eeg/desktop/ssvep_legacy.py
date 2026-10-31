@@ -64,15 +64,15 @@ def display_metadata(window, plan, screen):
     }
 
 
-def target_levels(phase, target_index, frame, refresh_hz, frequencies):
+def target_levels(phase, target_index, frame, refresh_hz, frequencies, *, elapsed_sec=None):
     levels = [30] * len(frequencies)
     if phase == 'cue':
         levels[target_index] = 100
     elif phase == 'prep':
         levels[target_index] = 170
     elif phase == 'flicker':
-        period = max(2, round(refresh_hz / frequencies[target_index]))
-        levels[target_index] = 255 if (frame % period) < period / 2 else 0
+        seconds = frame / refresh_hz if elapsed_sec is None else elapsed_sec
+        levels[target_index] = 255 if (seconds * frequencies[target_index] + 1e-9) % 1 < .5 else 0
     return levels
 
 
@@ -94,7 +94,8 @@ def paint_single_target(window, painter):
     rects, _ = target_layout(window.width(), window.height(), plan.screen_diagonal_in, plan.target_size_cm)
     levels = target_levels(phase, window._ssvep_target_index,
                            window.frame_index - window._ssvep_flicker_frame,
-                           window.refresh_hz, window.ssvep_frequencies)
+                           window.refresh_hz, window.ssvep_frequencies,
+                           elapsed_sec=window._ssvep_phase_sec if getattr(window, '_ssvep_clock', None) else None)
     for index, (box, vertices, level) in enumerate(zip(rects, target_polygons(rects), levels)):
         poly = QPolygon([QPoint(x,y) for x,y in vertices])
         painter.setPen(Qt.PenStyle.NoPen)

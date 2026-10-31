@@ -26,7 +26,7 @@ class GuidedPresentation:
                     from neuroscope_eeg.desktop.ssvep_presentation import POSITIONS
                     if flow.plan.single_target:
                         from neuroscope_eeg.desktop.ssvep_legacy import POSITIONS
-                    payload.update(stimulus_mode='simultaneous_eight' if flow.plan.eight_target else 'single_target', target_position=POSITIONS[self._ssvep_target_index],
+                    payload.update(stimulus_mode=flow.plan.stimulus_mode, target_position=POSITIONS[self._ssvep_target_index],
                                    condition_order='ascending_frequency_cyclic')
                     if step.phase == 'flicker':
                         self._ssvep_flicker_frame = self.frame_index

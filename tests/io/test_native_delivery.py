@@ -15,6 +15,28 @@ PROFILE = {"confirmed": True, "manufacturer": "TestLab", "model": "Fixture", "ee
            "software_filters": "n/a", "power_line_frequency": 50, "physical_min": [-100, -100], "physical_max": [100, 100], "range_evidence": "Synthetic fixture specifications"}
 
 
+def test_brainco_export_keeps_trigger_evidence_without_claiming_alignment(tmp_path):
+    root, _ = record(tmp_path)
+    path = root / "device.json"
+    device = json.loads(path.read_text(encoding="utf-8"))
+    device["source_type"] = "brainco"
+    write_json(path, device)
+    path = root / "raw/chunks.jsonl"
+    chunk = json.loads(path.read_text(encoding="utf-8"))
+    chunk["auxiliaries"]["brainco_trigger_events_json"] = {
+        "value": json.dumps([{"event_seq": 3, "sample_counter": 12345}])}
+    path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+    out = export_delivery(root, tmp_path / "delivery", allow_estimated_timing=True)
+    audit = json.loads((root / "delivery/brainco_triggers.json").read_text(encoding="utf-8"))
+    assert audit["summary"]["received_events"] == 1
+    assert audit["summary"]["physical_onset_calibrated"] is False
+    assert audit["records"][0]["sample_counter"] == 12345
+    session = json.loads(next(out.rglob("session.json")).read_text(encoding="utf-8"))
+    assert session["brainco_trigger_evidence"] == audit
+    events = next(out.rglob("*_events.tsv")).read_text(encoding="utf-8")
+    assert "software_cursor_unverified" in events
+
+
 def record(tmp_path, *, external=False, invalid=False, gap=False, participant="00000001"):
     meta = SourceMetadata("fixture", "emotiv_external" if external else "fixture", 250,
                           () if external else ("C3", "C4"), () if external else ("eeg", "eeg"),

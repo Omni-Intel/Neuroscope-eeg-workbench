@@ -197,6 +197,9 @@ def write_detailed_word(report, destination, figures):
         ('设备侧标记', shown(protocol.get('received_hardware_markers')), '不可用表示缺少证据，不表示零接收'),
     ], [2.2, 1.2, 3.1])
 
+    from neuroscope_eeg.reports.timing_section import write_brainco_trigger_section
+    write_brainco_trigger_section(layout, report)
+
     from neuroscope_eeg.reports.protocol_section import write_protocol_section, write_segment_quality_section
     write_protocol_section(layout, report, shown)
 

@@ -107,6 +107,8 @@ class NativeRecorder:
             "task": _PARADIGM_SLUGS[paradigm].replace("_", ""), "preset": preset,
             "started_at": utc_now(), "ended_at": None, "recording_status": "recording", "stop_reason": "",
             "acquisition_software": SOFTWARE, "source_sample_offset": self.source_sample_offset,
+            "requested_source_sample_offset": self.source_sample_offset,
+            "source_sample_offset_basis": "awaiting_first_saved_sample",
             "external_recording": metadata.source_type == "emotiv_external",
             "simulated": metadata.source_type in {"simulated", "simulator", "replay", "npz_replay"},
             "bids_validated": False,
@@ -219,6 +221,13 @@ class NativeRecorder:
         if chunk.valid is not None:
             valid &= chunk.valid
         if n:
+            if self._last_index is None:
+                # Recorder setup runs while acquisition continues. Only the first
+                # saved nonempty chunk defines the recording's actual origin.
+                with self._lock:
+                    self.source_sample_offset = int(indices[0])
+                    self.run["source_sample_offset"] = self.source_sample_offset
+                    self.run["source_sample_offset_basis"] = "first_saved_sample_index"
             joined = indices if self._last_index is None else np.r_[self._last_index, indices]
             if np.any(np.diff(joined) != 1):
                 self._continuity.append({"offset": self._written, "reason": "sample_index_gap"})
@@ -253,10 +262,14 @@ class NativeRecorder:
         self._chunklog.flush()  # commit marker written only after every array is flushed
         self._written += n
         self._invalid += int(np.count_nonzero(~valid))
+        if n and self._written == n:
+            with self._lock:
+                self._persist()
 
     def _persist(self):
-        write_json(self.session_dir / "run.json", {**self.run, "samples": self._written,
-                   "invalid_samples": self._invalid, "continuity_errors": self._continuity, "error": self.error})
+        with self._lock:
+            write_json(self.session_dir / "run.json", {**self.run, "samples": self._written,
+                       "invalid_samples": self._invalid, "continuity_errors": self._continuity, "error": self.error})
 
     def stop(self, *, status, reason):
         with self._lock:

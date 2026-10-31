@@ -94,9 +94,10 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
         raise ValueError("记录尚未封存")
     if run["simulated"] and not allow_simulated:
         raise ValueError("模拟/回放记录仅用于演示，不作为真实设备 EEGQC 交付")
-    p = {**device.get("extra", {}), **(profile or {})}
+    from neuroscope_eeg.io.omni_delivery import delivery_profile
+    p = delivery_profile(device, {**device.get("extra", {}), **(profile or {})})
     required = ["manufacturer", "model", "eeg_reference", "software_filters", "power_line_frequency"]
-    if p.get("confirmed") is not True or any(key not in p for key in required):
+    if not (p.get("confirmed") is True or p.get("delivery_confirmed") is True) or any(key not in p for key in required):
         raise ValueError("导出前需确认设备配置：confirmed、manufacturer、model、eeg_reference、software_filters、power_line_frequency")
     external = run["external_recording"]
     if external:
@@ -129,6 +130,8 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
     if len(set(names)) != len(names) or any(len(x.encode("ascii", errors="replace")) > 16 or not x.isascii() for x in names):
         raise ValueError("EDF 通道名称须唯一、ASCII 且不超过 16 字符；请先确认通道映射")
     rows = _event_rows(run_dir, run, sfreq, n, allow_estimated_timing)
+    from neuroscope_eeg.io.brainco_triggers import read_brainco_triggers
+    brainco = read_brainco_triggers(run_dir)
     parent = Path(edf_path(output_root)) / (("simulation_" if run["simulated"] else "") + run["unique_name"])
     parent.mkdir(parents=True, exist_ok=True)
     target = parent / ("recording-" + run["session_id"])
@@ -176,11 +179,25 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
             for start in range(0, n, step):
                 writer.writeSamples([np.asarray(data[start:start+step, c], dtype=np.float64) for c in range(len(names))])
         with pyedflib.EdfReader(edf_path(edf)) as reader:
+            encoding = []
             for index, (lo, hi) in enumerate(zip(lower, upper)):
                 if not math.isclose(reader.getPhysicalMinimum(index), lo, rel_tol=1e-9, abs_tol=0) or not math.isclose(reader.getPhysicalMaximum(index), hi, rel_tol=1e-9, abs_tol=0):
                     raise ValueError("EDF 量程回读不一致；未发布交付包")
+                quantum = (hi-lo)/65535
+                error = 0.0
+                for offset in range(0, n, 10000):
+                    size = min(10000, n-offset)
+                    decoded = reader.readSignal(index, offset, size)
+                    error = max(error, float(np.max(np.abs(decoded-data[offset:offset+size, index]))))
+                if error > quantum * 1.00001 + 1e-6:
+                    raise ValueError('EDF 回读量化误差超出一个编码步长：' + names[index])
+                encoding.append({'channel': names[index], 'unit': units[index],
+                                 'quantization_step': quantum, 'max_absolute_error': error})
             if any(reader.getNSamples() != n) or any(abs(reader.getSampleFrequencies()-sfreq) > 1e-7):
                 raise ValueError("EDF 回读的样本数或采样率不一致，交付包未封存")
+        write_json(auxiliary / 'edf_encoding.json', {'format': 'EDF+ signed 16-bit',
+                   'original_retained': True, 'channels': encoding,
+                   'note': 'EDF quantizes physical values; native raw/eeg.f32 retains SDK samples.'})
     write_json(staging / "dataset_description.json", {"Name": run["unique_name"], "BIDSVersion": "1.9.0", "DatasetType": "raw",
                "GeneratedBy": [{"Name": run["acquisition_software"]["name"], "Version": run["acquisition_software"]["version"]}], "Description": "SIMULATED DATA" if run["simulated"] else "Single continuous EEG recording"})
     (staging / ".bidsignore").write_text("**/session.json\n", encoding="utf-8")
@@ -191,7 +208,8 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
         "This package contains no EEGQC score or upload receipt.\n", encoding="utf-8")
     _tsv(staging / "participants.tsv", ["participant_id"], [{"participant_id": sub}])
     write_json(eeg_dir.parent / "session.json", {"schema_version": 1, **{key: run[key] for key in (
-        "participant_id", "session_id", "paradigm_code", "started_at", "ended_at", "recording_status", "stop_reason", "acquisition_software")}})
+        "participant_id", "session_id", "paradigm_code", "started_at", "ended_at", "recording_status", "stop_reason", "acquisition_software")},
+        **({"brainco_trigger_evidence": brainco} if brainco is not None else {})})
     write_json(eeg_dir / (prefix + "_eeg.json"), {
         "TaskName": run["task"], "SamplingFrequency": sfreq, "PowerLineFrequency": p["power_line_frequency"],
         "EEGReference": p["eeg_reference"], "SoftwareFilters": p["software_filters"], "RecordingType": "continuous",
@@ -200,6 +218,8 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
         "ECGChannelCount": sum(t.lower() == "ecg" for t in types), "EMGChannelCount": sum(t.lower() == "emg" for t in types),
         "MISCChannelCount": sum(t.lower() not in {"eeg", "eog", "ecg", "emg", "stim", "trigger", "trg"} for t in types),
         "PhysicalRangeEvidence": p.get("range_evidence", "Original external EDF header"),
+        "ExportMetadataNote": p.get("export_metadata_note", "Explicit user export profile"),
+        "UnrecordedExportFields": p.get("unrecorded_export_fields", []),
         "TriggerChannelCount": sum(t.lower() in {"stim", "trigger", "trg"} for t in types),
     })
     type_map = {"stim": "TRIG", "trigger": "TRIG", "trg": "TRIG"}
@@ -217,6 +237,8 @@ def export_delivery(run_dir, output_root, *, allow_estimated_timing=False, allow
                         event_kind="phase_transition: instantaneous or missing end; software_phase_interval: observed host-cursor interval, not physical display timing; aligned_interval: explicit supplied alignment",
                         context_json="NeuroScope local event payload as JSON; planned_duration_s is planned, not measured. These extensions are not company standardized event fields.")
     write_json(eeg_dir / (prefix + "_events.json"), {k: {"Description": v} for k, v in descriptions.items()})
+    if brainco is not None:
+        write_json(auxiliary / "brainco_triggers.json", brainco)
     staging.rename(target)
     write_json(auxiliary / "validation.json", {"bids_validated": False, "status": "not_run", "package": str(target),
                "source_session_id": run["session_id"], "estimated_timing": any(r["timing_method"] == "software_cursor_unverified" for r in rows),

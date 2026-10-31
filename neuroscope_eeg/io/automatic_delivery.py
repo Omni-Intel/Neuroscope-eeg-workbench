@@ -8,6 +8,7 @@ from neuroscope_eeg.io.external_recording import sha256
 from neuroscope_eeg.io.native_recording import utc_now, write_json
 from neuroscope_eeg.io.storage_layout import record_identity
 from neuroscope_eeg.profile_config import validate_profile
+from neuroscope_eeg.io.omni_delivery import delivery_profile
 
 
 def _read(path):
@@ -64,7 +65,8 @@ def ensure_delivery(run_dir, progress=lambda _: None, *, validator="bids-validat
                        "eeg_reference": "n/a", "software_filters": "n/a", "power_line_frequency": "n/a",
                        "physical_min": [-10000.] * len(device["channel_names"]), "physical_max": [10000.] * len(device["channel_names"]),
                        "range_evidence": "Built-in simulation export range; not hardware specifications"}
-        if profile.get("confirmed") is not True or any(key not in profile for key in (
+        profile = delivery_profile(device, profile)
+        if not (profile.get("confirmed") is True or profile.get("delivery_confirmed") is True) or any(key not in profile for key in (
             "manufacturer", "model", "eeg_reference", "software_filters", "power_line_frequency"
         )):
             return finish("needs_configuration", "等待确认本次设备配置：厂家、型号、参考方式、滤波和工频；可在记录与报告中补充")

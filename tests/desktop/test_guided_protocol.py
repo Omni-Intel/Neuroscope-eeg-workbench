@@ -72,6 +72,16 @@ def press(auto=False):
     window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier, ' ', auto))
 def release():
     window.keyReleaseEvent(QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier))
+def swap():
+    # Offscreen Qt cannot swap a real OpenGL surface. Model both halves of
+    # presentation, including which events belonged to the painted picture.
+    window._prepare_painted_frame()
+    window._on_frame_swapped()
+def advance_time():
+    if window._ssvep_clock:
+        swap()
+    else:
+        window._tick()
 with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_counter', side_effect=lambda: now[0]):
     for paradigm in ('SSVEP', '运动想象'):
         events.clear()
@@ -86,7 +96,7 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
             now[0] += 500
             window._tick()
             assert flow.index == index  # Unpresented phase cannot be skipped.
-            window._on_frame_swapped()
+            swap()
             if not window.timer.isActive(): break
             if flow.step.phase == 'baseline_eyes_closed':
                 painter = Mock()
@@ -102,7 +112,7 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
             if flow.step.duration is None:
                 press()
                 next_index = flow.index
-                window._on_frame_swapped()
+                swap()
                 now[0] += .3
                 press(True); press()
                 assert flow.index == next_index  # Holding Space never advances twice.
@@ -116,12 +126,12 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
                         press(); release()
                     else:
                         now[0] += flow.step.duration
-                        window._tick()
+                        advance_time()
             else:
                 press(); release()
                 assert flow.index == index
                 now[0] += flow.step.duration
-                window._tick()
+                advance_time()
         assert window._guided_ended and window.stop_reason == 'completed'
         assert window.summary()['completed_formal_trials'] == plan.total_trials
         assert len([e for e in events if e.phase == 'trial_complete' and not e.payload['is_practice']]) == plan.total_trials
@@ -137,7 +147,9 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
             assert [e.payload['target_frequency'] for e in formal] == sorted(window.ssvep_frequencies) * 3
             start = next(e for e in events if e.phase == 'start').payload
             assert start['ssvep_condition_sequence'] == list(range(8)) * 3
-            assert start['ssvep_display']['mode'] == 'simultaneous_eight'
+            assert start['ssvep_display']['mode'] == 'sequential_eight'
+            assert start['ssvep_display']['active_targets_per_trial'] == 1
+            assert all(e.payload['stimulus_mode'] == 'sequential_eight' for e in formal)
             assert start['ssvep_display']['target_size_cm_estimated'] is None
             for trial in formal:
                 phases = [e.phase for e in events if e.payload.get('trial') == trial.payload['trial']]
@@ -155,7 +167,7 @@ with patch('time.monotonic', side_effect=lambda: now[0]), patch('time.perf_count
         press(); release()
         assert not window.isVisible()
     window.start_protocol('SSVEP', app.primaryScreen(), assessment_protocol=AssessmentProtocol.defaults('SSVEP'))
-    window._on_frame_swapped()
+    swap()
     window.stop_protocol('escape')
     assert window.summary()['completed_formal_trials'] == 0 and events[-1].payload['stop_reason'] == 'escape'
 window.close()

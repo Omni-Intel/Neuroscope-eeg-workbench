@@ -12,6 +12,14 @@ from neuroscope_eeg.core.models import EEGChunk, SourceMetadata
 from neuroscope_eeg.profile_config import validate_profile
 from neuroscope_eeg.timing.models import HardwareTriggerSample
 
+# bcigo-sdk 2.1.2 package documentation, Channel Layout. Preserve SDK order;
+# IO is described as reference, so exclude it from default scalp EEG analysis.
+BRAINCO_CHANNEL_NAMES = (
+    "FP1", "FP2", "F3", "F4", "F7", "F8", "Fz", "C3", "C4", "Cz",
+    "P3", "P4", "P7", "P8", "Pz", "O1", "O2", "T7", "T8", "FC1", "FC2",
+    "FC5", "FC6", "CP1", "CP2", "CP5", "CP6", "FT9", "FT10", "TP9", "TP10", "IO",
+)
+
 
 def read_profile(path: str = "") -> dict:
     if not path.strip():
@@ -127,13 +135,30 @@ class DemoSource:
         self.metadata = metadata(kind, backend.metadata.sfreq, backend.metadata.n_channels, profile)
         self._sample = 0
         self._last_timestamp = None
+        self._received_trigger_events = 0
+
+    @property
+    def trigger_status(self):
+        return {**getattr(self.backend, "trigger_sync_status", {"state": "not_requested", "error": ""}),
+                "received_events": self._received_trigger_events, "physical_onset_calibrated": False}
+
+    @property
+    def trigger_status_text(self):
+        status = self.trigger_status
+        label = {"not_requested": "尚未请求", "disabled": "未启用", "requesting": "等待确认",
+                 "unsupported": "SDK 不支持", "unconfirmed": "未获确认", "rejected": "请求被拒绝",
+                 "acknowledged": "已确认开启上报"}.get(status["state"], "状态未知")
+        return f"BrainCo Trigger：{label}，已接收 {status['received_events']} 条（物理同步未验证）"
 
     def start(self):
+        self._received_trigger_events = 0
         self.backend.start_stream()
         self._sample = 0
         extra = {"timestamp_basis": "lsl_remote" if self.kind == "lsl" else "host_sample_counter",
                  "loss_detection": "timestamps" if self.kind == "lsl" else "unavailable_sdk_packet_sequence",
                  "adapter_reference": "acq-task-eeg-demo-main"}
+        default_names = default_types = None
+        profile = dict(self.profile)
         if self.kind == "lsl":
             if self.backend.stream_identity["channels"] != self.metadata.n_channels:
                 raise RuntimeError("LSL 实际通道数与配置不一致，不静默丢弃额外通道")
@@ -143,7 +168,22 @@ class DemoSource:
         else:
             from importlib.metadata import version
             extra["sdk_version"] = version("bcigo-sdk")
-        self.metadata = metadata(self.kind, self.metadata.sfreq, self.metadata.n_channels, self.profile, extra=extra)
+            if extra["sdk_version"] == "2.1.2":
+                units = self.profile.get("channel_units", ["unknown"] * self.metadata.n_channels)
+                if any(unit not in {"unknown", "uV", "µV", "μV"} for unit in units):
+                    raise ValueError("BrainCo SDK 2.1.2 输出已是微伏，配置单位须为 uV，不重复缩放数据")
+                profile["channel_units"] = ["uV"] * self.metadata.n_channels
+                extra["unit_evidence"] = "bcigo-sdk 2.1.2 native parser: ADC * 4.5e6 / gain / 2**23; no additional scaling"
+                if "channel_names" not in profile:
+                    default_names = BRAINCO_CHANNEL_NAMES[:self.metadata.n_channels]
+                    default_types = ["misc" if name == "IO" else "eeg" for name in default_names]
+                    extra["channel_mapping_source"] = "bcigo-sdk 2.1.2 METADATA Channel Layout"
+                    extra["channel_mapping_note"] = "SDK 默认电极顺序；实物布局和采集参考仍需确认，可用设备配置覆盖。IO 保留原值，不参与默认 EEG 分析。"
+            extra["brainco_trigger_sync"] = self.trigger_status
+            extra["device_timestamp_basis"] = "sdk_native_unit_unknown_float32_precision"
+            extra["adapter_reference"] = "neuroscope_verified_config"
+        self.metadata = metadata(self.kind, self.metadata.sfreq, self.metadata.n_channels, profile,
+                                 names=default_names, types=default_types, extra=extra)
 
     def stop(self):
         self.backend.stop_stream()
@@ -163,8 +203,14 @@ class DemoSource:
                 self._last_timestamp = ts[-1]
         else:
             ts = indices / self.metadata.sfreq
+            device_ticks = np.asarray(getattr(self.backend, "last_device_timestamps", []), dtype=np.float64)
+            if device_ticks.size:
+                if device_ticks.shape != (data.shape[1],):
+                    raise RuntimeError("BrainCo device timestamp count does not match EEG sample count")
+                aux["brainco_device_timestamps"] = device_ticks.copy()
             # SDK event_seq is an event sequence, NOT a stimulus code.
             triggers = [asdict(e) for e in self.backend.pop_trigger_events()]
+            self._received_trigger_events += len(triggers)
             if triggers:
                 aux["brainco_trigger_events_json"] = np.asarray(json.dumps(triggers))
         seq = self._sample

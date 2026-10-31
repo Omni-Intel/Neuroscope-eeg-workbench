@@ -58,7 +58,13 @@ def generate_report(run_dir, progress=lambda _: None):
                                   "implementation_sha256": {name: sha256(Path(__file__).with_name(name))
                                       for name in ("generate.py", "word_report.py", "response_section.py", "layout.py", "protocol_section.py", "compact_report.py", "timing_section.py")}}
         write_json(staging / "assessment.json", report)
+        if "brainco_triggers" in report["protocol"]:
+            from neuroscope_eeg.io.brainco_triggers import read_brainco_triggers
+            write_json(staging / "brainco_triggers.json", read_brainco_triggers(run_dir))
         write_csv(staging / 'display_timing.csv', (report['protocol'].get('display_timing') or {}).get('rows', []))
+        ssvep_clock = (report['protocol'].get('display_timing') or {}).get('ssvep_frame_clock')
+        if ssvep_clock:
+            write_csv(staging / 'ssvep_frame_timing.csv', ssvep_clock.get('trials', []))
         for filename, rows in (("channels", report["channels"]), ("windows", report["windows"]),
                                ("phases", report["phase_intervals"]),
                                ("segment_channels", [{"segment": item["label"], "start_sample": item["start_sample"], "end_sample": item["end_sample"], **c} for item in report["segment_quality"] for c in item["channels"]]),

@@ -33,6 +33,7 @@ def test_original_stage_timing_and_automatic_stop():
     for trial in range(6):
         for offset, phase in [(0, "fixation"), (2, "cue"), (3, "imagery"), (7, "rest")]:
             window._update_motor_imagery(trial*9+offset)
+            window._prepare_painted_frame()
             window._on_frame_swapped()
             assert events[-1].phase == phase
             assert events[-1].payload["is_practice"] == (trial < 3)

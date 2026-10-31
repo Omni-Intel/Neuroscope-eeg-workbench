@@ -67,6 +67,10 @@ class WorkbenchActions(ExperimentIdentity):
         self.extra_device_group = QGroupBox("公司 SDK / LSL / EMOTIV")
         extra = QFormLayout(self.extra_device_group)
         self._extra_device_form = extra
+        self.omni_profile_button = QPushButton('填写 / 保存 Omni 采集信息')
+        from neuroscope_eeg.desktop.omni_profile import edit_profile
+        self.omni_profile_button.clicked.connect(lambda: edit_profile(self))
+        extra.addRow(self.omni_profile_button)
         self.omni_endpoint = QLineEdit("serial://COM5")
         self.omni_type = QComboBox()
         self.omni_type.addItems(["esp32", "stm32"])
@@ -108,6 +112,7 @@ class WorkbenchActions(ExperimentIdentity):
         note.setWordWrap(True)
         actions.addRow(note)
         for label, callback in [("导入并关联 EMOTIV EDF（自动评估）", self._associate_edf),
+                                ("为已有记录补导出 EDF", self._retry_delivery),
                                 ("运行 BIDS Validator", self._validate_delivery),
                                 ("关联阻抗 / CQ / EQ 凭据", self._import_impedance),
                                 ("导入已核对的事件对齐表", self._import_alignment),
@@ -191,6 +196,18 @@ class WorkbenchActions(ExperimentIdentity):
             self._enqueue_report(run)
             return f"已保存对齐表，后台将校验事件范围：{path}"
         self._run_file_operation(operation, finished)
+
+    def _retry_delivery(self):
+        run = self._choose_run()
+        if run is not None:
+            from neuroscope_eeg.io.automatic_delivery import ensure_delivery
+            def finished(result):
+                text = '原始记录已保存。\n' + result['message']
+                if result.get('package'):
+                    text += '\n位置：' + result['package']
+                self.delivery_status.setText(text)
+                return text
+            self._run_file_operation(lambda: ensure_delivery(run), finished)
 
     def _associate_analysis_profile(self):
         run = self._choose_run()

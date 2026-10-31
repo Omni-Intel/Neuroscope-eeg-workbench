@@ -1,7 +1,9 @@
 """Per-paradigm settings; the running experiment receives an immutable snapshot."""
 import json
+from dataclasses import replace
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -26,15 +28,20 @@ class ProtocolSettings:
         if self._protocol_settings_path.exists():
             try:
                 saved = json.loads(self._protocol_settings_path.read_text(encoding="utf-8"))
-                if not isinstance(saved, dict) or set(saved) - set(self._protocol_values):
+                if not isinstance(saved, dict) or set(saved) - set(self._protocol_values) - {'settings_version'}:
                     raise ValueError("未知范式配置")
+                if saved.get('settings_version', 1) not in (1, 2):
+                    raise ValueError("未知设置文件版本")
                 for p in self._protocol_values:
                     if p in saved:
                         plan = AssessmentProtocol.from_dict(saved[p]).for_new_run()
+                        if p == 'SSVEP' and saved.get('settings_version', 1) == 1:
+                            plan = replace(plan, ssvep_mode='sequential_eight_v5')
                         if plan.paradigm != p:
                             raise ValueError("保存的范式不匹配")
                         self._protocol_values[p] = plan.to_dict()
-                load_message = "已恢复实验设置：SSVEP 八目标，MI 四条件固定循环。旧 MI 按每条件次数换算总试次与分组，请核对。"
+                load_message = ("已恢复实验设置；旧版 SSVEP 设置已改为每次只闪当前目标，可在刺激显示中切换。"
+                                if saved.get('settings_version', 1) == 1 else "已恢复各范式设置及 SSVEP 闪烁方式。")
             except (OSError, ValueError, TypeError):
                 load_message = "部分保存设置无法读取；相应范式使用默认值，请核对。"
         self.trial_group = QGroupBox("实验流程与参数")
@@ -62,6 +69,11 @@ class ProtocolSettings:
             page = QWidget()
             form = QFormLayout(page)
             form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+            if title == '刺激显示':
+                self.ssvep_mode_select = QComboBox()
+                self.ssvep_mode_select.addItem('仅当前目标闪烁（其余七块暗色）', 'sequential_eight_v5')
+                self.ssvep_mode_select.addItem('八个目标同时闪烁', 'simultaneous_eight_v3')
+                form.addRow('闪烁方式', self.ssvep_mode_select)
             for name, label, minimum, maximum in fields:
                 spin = QSpinBox() if name in {'total_trials','block_trials','practice_per_condition'} else QDoubleSpinBox()
                 spin.setRange(minimum, maximum)
@@ -102,12 +114,25 @@ class ProtocolSettings:
         body.addWidget(self.protocol_settings_status)
         layout.addWidget(self.trial_group)
         self._display_protocol()
+        self.ssvep_mode_select.currentIndexChanged.connect(self._ssvep_mode_changed)
 
     def _remember_protocol(self):
         self._protocol_values[self._trial_paradigm].update({k: w.value() for k, w in self.protocol_fields.items()})
+        if self._trial_paradigm == 'SSVEP':
+            mode = self.ssvep_mode_select.currentData()
+            self._protocol_values['SSVEP'].update(ssvep_mode=mode,
+                version='guided-assessment-v5' if mode == 'sequential_eight_v5' else 'guided-assessment-v3')
+
+    def _ssvep_mode_changed(self):
+        self._remember_protocol()
+        self._display_protocol()
 
     def _display_protocol(self):
         default = AssessmentProtocol.defaults(self._trial_paradigm)
+        mode = self._protocol_values['SSVEP']['ssvep_mode']
+        self.ssvep_mode_select.blockSignals(True)
+        self.ssvep_mode_select.setCurrentIndex(self.ssvep_mode_select.findData(mode))
+        self.ssvep_mode_select.blockSignals(False)
         for name, widget in self.protocol_fields.items():
             widget.setValue(self._protocol_values[self._trial_paradigm].get(name, getattr(default, name)))
             self.protocol_defaults[name].setText(f"默认 {getattr(default, name):g}")
@@ -119,7 +144,7 @@ class ProtocolSettings:
         self._protocol_tabs.setTabVisible(3, self._trial_paradigm == 'SSVEP')
         self.protocol_hint.setText(f"总试次和每组试次填写 {default.conditions} 的倍数，各条件等量；末组可少于设定值。\n"
                                    "组间倒计时结束后需按空格继续；练习设 0 可关闭。静息基线每次独立采集。"
-                                   + ('\nSSVEP 每组由低频到高频循环。八个方块位于九宫格外围并同时闪烁，8–15 Hz，间隔 1 Hz；屏幕尺寸未测量时，靶点按屏幕短边 20% 呈现。厘米值仅在填写屏幕尺寸后生效，观看距离请实测填写。' if self._trial_paradigm == 'SSVEP' else '\nMI 按左手 → 右手 → 双脚 → 舌头固定循环，不随机。当前用于采集，任务响应与分类待接入。'))
+                                   + (f"\nSSVEP 八个位置按 8–15 Hz 升序循环，间隔 1 Hz；{'每次只闪当前目标，其余七块保持暗色' if mode == 'sequential_eight_v5' else '八个方块同时闪烁'}。屏幕尺寸未测量时，靶点按屏幕短边 20% 呈现。厘米值仅在填写屏幕尺寸后生效，观看距离请实测填写。" if self._trial_paradigm == 'SSVEP' else '\nMI 按左手 → 右手 → 双脚 → 舌头固定循环，不随机。当前用于采集，任务响应与分类待接入。'))
 
     def _trial_paradigm_changed(self):
         if not hasattr(self, "trial_group"):
@@ -146,6 +171,7 @@ class ProtocolSettings:
         self._remember_protocol()
         try:
             values = {p: AssessmentProtocol.from_dict(v).to_dict() for p, v in self._protocol_values.items()}
+            values['settings_version'] = 2
             self._protocol_settings_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self._protocol_settings_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")

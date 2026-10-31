@@ -39,7 +39,8 @@ def write_protocol_section(layout, report, shown):
                  "运动想象 ERD 仍使用各试次的提示前基线。" if settings['paradigm'] == '运动想象' else ""))
     if plan.single_target or plan.eight_target:
         display = report['run'].get('protocol_start_payload', {}).get('ssvep_display') or {}
-        paragraph('八个等大方块位于九宫格外围，中央为提示区；八个目标同时闪烁，每组按 8–15 Hz 升序循环。固定 FBCCA 识别被提示注视的目标。' if plan.eight_target else '四个等大三角靶贴近屏幕上、右、下、左四边；仅提示目标闪烁，其余保持暗态。每组按频率从小到大循环。'
+        paragraph('八个等大方块位于九宫格外围；每次仅提示目标闪烁，其余七块保持暗色，按 8–15 Hz 升序循环。固定 FBCCA 评估不同单目标刺激频率的可辨识程度，不代表八目标同时闪烁的注视选择能力。' if plan.sequential_eight else
+                  '八个等大方块位于九宫格外围，中央为提示区；八个目标同时闪烁，每组按 8–15 Hz 升序循环。固定 FBCCA 识别被提示注视的目标。' if plan.eight_target else '四个等大三角靶贴近屏幕上、右、下、左四边；仅提示目标闪烁，其余保持暗态。每组按频率从小到大循环。'
                   '固定算法结果描述不同单目标刺激频率的可辨识程度，不代表四靶同时闪烁的注视选择能力。')
         frequencies = display.get('frequencies_hz') or report['run'].get('protocol_start_payload', {}).get('ssvep_frequencies', [])
         rectangles = display.get('target_rects_logical_px', [])
